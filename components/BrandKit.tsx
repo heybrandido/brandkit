@@ -672,7 +672,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
           <h3 style={{ fontSize:18,color:"#fafafa",margin:"0 0 8px",fontFamily:"'Space Grotesk', sans-serif" }}>Desbloqueá tu kit completo</h3>
           <p style={{ fontSize:14,color:"#999",margin:"0 0 6px" }}>Logo en versiones · Templates descargables · Guía PDF</p>
           <p style={{ fontSize:12,color:"#666",margin:"0 0 20px" }}>Pago único — descargá todo al instante.</p>
-          <button style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#e8a838",color:"#0a0a0a",fontSize:15,fontWeight:700,cursor:"pointer" }}>Obtener Kit Pro — USD $29</button>
+          <button style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#e8a838",color:"#0a0a0a",fontSize:15,fontWeight:700,cursor:"pointer" }}>Obtener Kit Pro — USD $9.99</button>
         </div>
       )}
     </div>
