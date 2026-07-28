@@ -126,11 +126,20 @@ async function generateBrandGuidePDF({ brandName, industry, personality, audienc
   let y = margin;
   y = drawColorBar(y);
 
-  // Logo
-  if (logoData) {
-    try { doc.addImage(logoData, "PNG", margin, y, 35, 25, undefined, "FAST"); } catch(e) {}
-  }
-  y += 30;
+// Logo
+    if (logoData) {
+      try {
+        const logoImg = await loadImageForCanvas(logoSrc);
+        if (logoImg) {
+          const maxW = 40, maxH = 20;
+          const ratio = Math.min(maxW / logoImg.width, maxH / logoImg.height);
+          const lw = logoImg.width * ratio;
+          const lh = logoImg.height * ratio;
+          doc.addImage(logoData, "PNG", margin, y, lw, lh, undefined, "FAST");
+          y += lh + 5;
+        }
+      } catch(e) { y += 5; }
+    }
 
   // Title
   doc.setFontSize(32);
