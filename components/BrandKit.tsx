@@ -60,240 +60,400 @@ function contrastColor(bg) { return getLuminance(bg) < 45 ? "#ffffff" : "#111111
 
 // ── Download helpers ──
 function downloadDataUrl(dataUrl, filename) {
-  const a = document.createElement("a");
-  a.href = dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const a = document.createElement("a"); a.href = dataUrl; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
-
 async function loadImageForCanvas(src) {
   return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = src;
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img); img.onerror = () => resolve(null); img.src = src;
   });
 }
 
+function hexToRgb(hex) {
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+
+// ── PDF Generation with jsPDF ──
+async function generateBrandGuidePDF({ brandName, industry, personality, audience, palette, fonts, logoSrc }) {
+  const { default: jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const W = 210, H = 297;
+  const margin = 20;
+  const contentW = W - margin * 2;
+
+  // Helper functions
+  const drawColorBar = (y) => {
+    const barH = 3;
+    const colors = [palette.primary, palette.secondary, palette.accent];
+    const segW = contentW / colors.length;
+    colors.forEach((c, i) => {
+      const [r,g,b] = hexToRgb(c);
+      doc.setFillColor(r, g, b);
+      doc.roundedRect(margin + i * segW, y, segW, barH, 1, 1, "F");
+    });
+    return y + barH + 8;
+  };
+
+  const drawSwatch = (x, y, color, label) => {
+    const size = 22;
+    const [r,g,b] = hexToRgb(color);
+    doc.setFillColor(r, g, b);
+    doc.roundedRect(x, y, size, size, 3, 3, "F");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 100, 100);
+    doc.text(label, x + size/2, y + size + 5, { align: "center" });
+    doc.setFontSize(7);
+    doc.text(color.toUpperCase(), x + size/2, y + size + 9, { align: "center" });
+    return size + 14;
+  };
+
+  // Load logo as base64 for embedding
+  let logoData = null;
+  try {
+    const logoImg = await loadImageForCanvas(logoSrc);
+    if (logoImg) {
+      const c = document.createElement("canvas");
+      c.width = logoImg.width; c.height = logoImg.height;
+      c.getContext("2d").drawImage(logoImg, 0, 0);
+      logoData = c.toDataURL("image/png");
+    }
+  } catch(e) {}
+
+  // ═══════════════════════════════════
+  // PAGE 1 — Cover + Color Palette
+  // ═══════════════════════════════════
+  let y = margin;
+  y = drawColorBar(y);
+
+  // Logo
+  if (logoData) {
+    try { doc.addImage(logoData, "PNG", margin, y, 35, 25, undefined, "FAST"); } catch(e) {}
+  }
+  y += 30;
+
+  // Title
+  doc.setFontSize(32);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Guía de Marca", margin, y);
+  y += 10;
+
+  doc.setFontSize(18);
+  const [pr, pg, pb] = hexToRgb(palette.primary);
+  doc.setTextColor(pr, pg, pb);
+  doc.text(brandName, margin, y);
+  y += 10;
+
+  doc.setFontSize(11);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Este documento define las reglas visuales de la marca ${brandName}.`, margin, y);
+  y += 5;
+  doc.text("Seguir estas pautas garantiza coherencia en todas las piezas.", margin, y);
+  y += 8;
+
+  doc.setFontSize(9);
+  doc.setTextColor(170, 170, 170);
+  doc.text(`${industry}  ·  Personalidad: ${personality}${audience ? "  ·  " + audience : ""}`, margin, y);
+  y += 4;
+  doc.text(`Generado con BrandKit  ·  ${new Date().toLocaleDateString("es-AR")}`, margin, y);
+  y += 15;
+
+  // ── Color Palette Section ──
+  doc.setFontSize(16);
+  doc.setTextColor(pr, pg, pb);
+  doc.text("Paleta de colores", margin, y);
+  y += 3;
+  doc.setDrawColor(pr, pg, pb);
+  doc.setLineWidth(0.5);
+  doc.line(margin, y, margin + 50, y);
+  y += 8;
+
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Estos son los colores oficiales de la marca. Usá los códigos HEX", margin, y);
+  y += 5;
+  doc.text("exactos para mantener consistencia en todos los materiales.", margin, y);
+  y += 12;
+
+  // Draw swatches
+  const paletteEntries = [
+    { color: palette.primary, label: "Primario" },
+    { color: palette.secondary, label: "Secundario" },
+    { color: palette.accent, label: "Acento" },
+    { color: palette.light, label: "Claro" },
+    { color: palette.dark, label: "Oscuro" },
+    { color: palette.neutral, label: "Neutro" },
+  ];
+  const swatchSize = 22;
+  const swatchGap = (contentW - swatchSize * 6) / 5;
+  paletteEntries.forEach((entry, i) => {
+    drawSwatch(margin + i * (swatchSize + swatchGap), y, entry.color, entry.label);
+  });
+  y += swatchSize + 18;
+
+  // Usage rules
+  doc.setFontSize(11);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Reglas de uso", margin, y);
+  y += 7;
+
+  // Do box
+  doc.setFillColor(240, 255, 240);
+  doc.roundedRect(margin, y, contentW/2 - 3, 28, 3, 3, "F");
+  doc.setFontSize(10);
+  doc.setTextColor(76, 175, 80);
+  doc.text("✓ Correcto", margin + 5, y + 7);
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Usá el primario para CTAs,", margin + 5, y + 14);
+  doc.text("botones y títulos destacados.", margin + 5, y + 19);
+  doc.text("El secundario para acompañar.", margin + 5, y + 24);
+
+  // Don't box
+  const dontX = margin + contentW/2 + 3;
+  doc.setFillColor(255, 240, 240);
+  doc.roundedRect(dontX, y, contentW/2 - 3, 28, 3, 3, "F");
+  doc.setTextColor(244, 67, 54);
+  doc.setFontSize(10);
+  doc.text("✗ Evitar", dontX + 5, y + 7);
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text("No uses colores fuera de esta", dontX + 5, y + 14);
+  doc.text("paleta. No combines primario", dontX + 5, y + 19);
+  doc.text("+ acento en texto sobre fondo.", dontX + 5, y + 24);
+
+  // ═══════════════════════════════════
+  // PAGE 2 — Typography
+  // ═══════════════════════════════════
+  doc.addPage();
+  y = margin;
+  y = drawColorBar(y);
+
+  doc.setFontSize(16);
+  doc.setTextColor(pr, pg, pb);
+  doc.text("Tipografías", margin, y);
+  y += 3;
+  doc.setDrawColor(pr, pg, pb);
+  doc.line(margin, y, margin + 35, y);
+  y += 8;
+
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("El sistema tipográfico usa dos familias principales.", margin, y);
+  y += 10;
+
+  // Display font
+  doc.setFillColor(248, 248, 248);
+  doc.roundedRect(margin, y, contentW, 35, 3, 3, "F");
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("DISPLAY / TÍTULOS", margin + 8, y + 8);
+  doc.setFontSize(24);
+  doc.setTextColor(30, 30, 30);
+  doc.text(fonts.display, margin + 8, y + 20);
+  doc.setFontSize(12);
+  doc.setTextColor(120, 120, 120);
+  doc.text("Aa Bb Cc Dd Ee Ff Gg 1234567890", margin + 8, y + 28);
+  y += 42;
+
+  // Body font
+  doc.setFillColor(248, 248, 248);
+  doc.roundedRect(margin, y, contentW, 35, 3, 3, "F");
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("BODY / TEXTO", margin + 8, y + 8);
+  doc.setFontSize(20);
+  doc.setTextColor(30, 30, 30);
+  doc.text(fonts.body, margin + 8, y + 20);
+  doc.setFontSize(10);
+  doc.setTextColor(120, 120, 120);
+  doc.text("La tipografía correcta transmite profesionalismo y", margin + 8, y + 28);
+  doc.text("coherencia en cada punto de contacto con tu audiencia.", margin + 8, y + 33);
+  y += 42;
+
+  // Hierarchy
+  doc.setFontSize(11);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Jerarquía tipográfica", margin, y);
+  y += 8;
+
+  doc.setFillColor(248, 248, 248);
+  doc.roundedRect(margin, y, contentW, 40, 3, 3, "F");
+  doc.setFontSize(22);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Título principal — H1", margin + 8, y + 10);
+  doc.setFontSize(16);
+  doc.text("Subtítulo — H2", margin + 8, y + 19);
+  doc.setFontSize(11);
+  doc.setTextColor(80, 80, 80);
+  doc.text("Texto de cuerpo — párrafo regular con la familia body.", margin + 8, y + 28);
+  doc.setFontSize(9);
+  doc.setTextColor(150, 150, 150);
+  doc.text("Caption o texto secundario — tamaño reducido.", margin + 8, y + 35);
+  y += 50;
+
+  // Font pairing summary
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text(`Títulos: ${fonts.display}`, margin, y); y += 5;
+  doc.text(`Cuerpo: ${fonts.body}`, margin, y); y += 5;
+  doc.text(`Datos / Monospace: ${fonts.mono}`, margin, y);
+
+  // ═══════════════════════════════════
+  // PAGE 3 — Logo + Applications
+  // ═══════════════════════════════════
+  doc.addPage();
+  y = margin;
+  y = drawColorBar(y);
+
+  doc.setFontSize(16);
+  doc.setTextColor(pr, pg, pb);
+  doc.text("Versiones del logo", margin, y);
+  y += 3;
+  doc.setDrawColor(pr, pg, pb);
+  doc.line(margin, y, margin + 50, y);
+  y += 8;
+
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("El logo debe usarse en una de estas versiones según el contexto.", margin, y);
+  y += 5;
+  doc.text("Nunca alteres proporciones ni colores fuera de estas opciones.", margin, y);
+  y += 12;
+
+  // Logo version boxes
+  const boxW = (contentW - 15) / 4;
+  const boxH = 30;
+  const versions = ["Original", "Blanco", "Negro", "Sin fondo"];
+  const bgColors = [[255,255,255], [30,30,30], [255,255,255], [240,240,240]];
+
+  versions.forEach((label, i) => {
+    const bx = margin + i * (boxW + 5);
+    const [br, bg, bb] = bgColors[i];
+    doc.setFillColor(br, bg, bb);
+    doc.roundedRect(bx, y, boxW, boxH, 3, 3, "F");
+    doc.setDrawColor(220, 220, 220);
+    doc.roundedRect(bx, y, boxW, boxH, 3, 3, "S");
+
+    if (logoData) {
+      try {
+        const logoW = 20, logoH = 14;
+        doc.addImage(logoData, "PNG", bx + (boxW-logoW)/2, y + (boxH-logoH)/2, logoW, logoH, `logo_${i}`, "FAST");
+      } catch(e) {}
+    }
+
+    doc.setFontSize(8);
+    doc.setTextColor(120, 120, 120);
+    doc.text(label, bx + boxW/2, y + boxH + 5, { align: "center" });
+  });
+  y += boxH + 12;
+
+  // Usage rules for logo
+  doc.setFontSize(11);
+  doc.setTextColor(30, 30, 30);
+  doc.text("Uso correcto del logo", margin, y);
+  y += 7;
+
+  doc.setFillColor(240, 255, 240);
+  doc.roundedRect(margin, y, contentW/2 - 3, 24, 3, 3, "F");
+  doc.setFontSize(10);
+  doc.setTextColor(76, 175, 80);
+  doc.text("✓ Correcto", margin + 5, y + 7);
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Original sobre fondos claros.", margin + 5, y + 14);
+  doc.text("Blanco sobre fondos oscuros.", margin + 5, y + 19);
+
+  doc.setFillColor(255, 240, 240);
+  doc.roundedRect(dontX, y, contentW/2 - 3, 24, 3, 3, "F");
+  doc.setTextColor(244, 67, 54);
+  doc.setFontSize(10);
+  doc.text("✗ Evitar", dontX + 5, y + 7);
+  doc.setFontSize(8);
+  doc.setTextColor(100, 100, 100);
+  doc.text("No estires ni rotes el logo.", dontX + 5, y + 14);
+  doc.text("No agregues sombras o efectos.", dontX + 5, y + 19);
+  y += 32;
+
+  // Applications section
+  doc.setFontSize(16);
+  doc.setTextColor(pr, pg, pb);
+  doc.text("Aplicaciones", margin, y);
+  y += 3;
+  doc.setDrawColor(pr, pg, pb);
+  doc.line(margin, y, margin + 35, y);
+  y += 8;
+
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Redes sociales", margin, y); y += 6;
+  doc.setFontSize(9);
+  doc.text("Usá la paleta como fondo o acento. El logo va siempre en la misma", margin, y); y += 4;
+  doc.text("posición. Tipografía display para títulos, body para cuerpo.", margin, y); y += 10;
+
+  doc.setTextColor(100, 100, 100);
+  doc.setFontSize(10);
+  doc.text("Papelería", margin, y); y += 6;
+  doc.setFontSize(9);
+  doc.text("El color primario se usa como acento (líneas, bordes). Nunca como", margin, y); y += 4;
+  doc.text("fondo completo en documentos impresos.", margin, y); y += 15;
+
+  // Footer
+  doc.setFillColor(245, 245, 245);
+  doc.roundedRect(margin, y, contentW, 18, 3, 3, "F");
+  doc.setFontSize(9);
+  doc.setTextColor(170, 170, 170);
+  doc.text(`Guía generada con BrandKit  ·  ${new Date().toLocaleDateString("es-AR")}`, W/2, y + 8, { align: "center" });
+  doc.text("brandkit.app", W/2, y + 13, { align: "center" });
+
+  // Save
+  doc.save(`${brandName.replace(/\s+/g, "-")}-guia-de-marca.pdf`);
+}
+
+// ── Template PNG generation ──
 async function generateTemplatePNG({ type, palette, brandName, logoHasName, logoSrc, displayFont }) {
   const dims = { post: [1080,1080], story: [1080,1920], cover: [1640,924] };
   const [w, h] = dims[type] || [1080,1080];
   const canvas = document.createElement("canvas");
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext("2d");
-
-  // Background
-  ctx.fillStyle = palette.light;
-  ctx.fillRect(0, 0, w, h);
-
-  // Accent bar
+  ctx.fillStyle = palette.light; ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = palette.primary;
-  if (type === "story") {
-    ctx.fillRect(0, 0, w, 8);
-    ctx.fillRect(0, h - 8, w, 8);
-  } else {
-    ctx.fillRect(0, h - 12, w, 12);
-  }
-
-  // Side accent
+  if (type === "story") { ctx.fillRect(0, 0, w, 8); ctx.fillRect(0, h - 8, w, 8); }
+  else { ctx.fillRect(0, h - 12, w, 12); }
   ctx.fillStyle = palette.secondary;
-  if (type === "cover") {
-    ctx.fillRect(0, 0, 8, h);
-  }
-
-  // Logo
+  if (type === "cover") { ctx.fillRect(0, 0, 8, h); }
   const logo = await loadImageForCanvas(logoSrc);
   if (logo) {
-    const maxLogoW = w * 0.3;
-    const maxLogoH = h * 0.2;
-    const scale = Math.min(maxLogoW / logo.width, maxLogoH / logo.height);
-    const lw = logo.width * scale;
-    const lh = logo.height * scale;
-    const lx = (w - lw) / 2;
-    const ly = type === "story" ? h * 0.15 : h * 0.12;
-    ctx.drawImage(logo, lx, ly, lw, lh);
+    const maxLW = w*0.3, maxLH = h*0.2, scale = Math.min(maxLW/logo.width, maxLH/logo.height);
+    const lw = logo.width*scale, lh = logo.height*scale;
+    ctx.drawImage(logo, (w-lw)/2, type==="story"?h*0.15:h*0.12, lw, lh);
   }
-
-  // Brand name
   if (!logoHasName) {
-    const fontSize = type === "story" ? 64 : type === "cover" ? 56 : 72;
-    ctx.font = `bold ${fontSize}px '${displayFont}', Georgia, serif`;
-    ctx.fillStyle = palette.dark;
-    ctx.textAlign = "center";
-    ctx.fillText(brandName, w / 2, type === "story" ? h * 0.42 : h * 0.48);
+    const fs = type==="story"?64:type==="cover"?56:72;
+    ctx.font = `bold ${fs}px '${displayFont}', Georgia, serif`;
+    ctx.fillStyle = palette.dark; ctx.textAlign = "center";
+    ctx.fillText(brandName, w/2, type==="story"?h*0.42:h*0.48);
   }
-
-  // Placeholder text areas
-  ctx.fillStyle = palette.neutral + "44";
-  const centerY = type === "story" ? h * 0.52 : h * 0.58;
-  ctx.fillRect(w * 0.15, centerY, w * 0.7, 3);
-  ctx.fillRect(w * 0.25, centerY + 20, w * 0.5, 3);
-
-  // CTA box
-  const ctaY = type === "story" ? h * 0.72 : h * 0.75;
+  ctx.fillStyle = palette.neutral+"44";
+  const cY = type==="story"?h*0.52:h*0.58;
+  ctx.fillRect(w*0.15, cY, w*0.7, 3); ctx.fillRect(w*0.25, cY+20, w*0.5, 3);
   ctx.fillStyle = palette.primary;
-  const ctaW = 240, ctaH = 56;
-  const ctaX = (w - ctaW) / 2;
-  roundRect(ctx, ctaX, ctaY, ctaW, ctaH, 12);
-  ctx.fill();
+  const ctaY = type==="story"?h*0.72:h*0.75, ctaW=240, ctaH=56, ctaX=(w-ctaW)/2;
+  roundRect(ctx, ctaX, ctaY, ctaW, ctaH, 12); ctx.fill();
   ctx.font = `bold 22px '${displayFont}', sans-serif`;
-  ctx.fillStyle = contrastColor(palette.primary);
-  ctx.textAlign = "center";
-  ctx.fillText("Tu CTA acá", w / 2, ctaY + 36);
-
-  // Watermark
-  ctx.font = "16px sans-serif";
-  ctx.fillStyle = palette.neutral + "66";
-  ctx.textAlign = "right";
-  ctx.fillText("Generado con BrandKit", w - 30, h - 24);
-
+  ctx.fillStyle = contrastColor(palette.primary); ctx.textAlign = "center";
+  ctx.fillText("Tu CTA acá", w/2, ctaY+36);
+  ctx.font = "16px sans-serif"; ctx.fillStyle = palette.neutral+"66"; ctx.textAlign = "right";
+  ctx.fillText("Generado con BrandKit", w-30, h-24);
   return canvas.toDataURL("image/png");
 }
-
 function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-function generateBrandGuideHTML({ brandName, industry, personality, audience, palette, fonts, logoSrc }) {
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Guía de Marca — ${brandName}</title>
-<link href="https://fonts.googleapis.com/css2?family=${fonts.display.replace(/ /g,"+")}:wght@400;700&family=${fonts.body.replace(/ /g,"+")}:wght@400;600&display=swap" rel="stylesheet">
-<style>
-  @page { size: A4; margin: 40px; }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: '${fonts.body}', sans-serif; color: #222; background: #fff; }
-  .page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 48px; page-break-after: always; }
-  @media print { .page { padding: 0; width: 100%; } .no-print { display: none; } }
-  h1 { font-family: '${fonts.display}', serif; font-size: 42px; color: ${palette.dark}; }
-  h2 { font-family: '${fonts.display}', serif; font-size: 28px; color: ${palette.primary}; margin: 32px 0 16px; border-bottom: 2px solid ${palette.primary}22; padding-bottom: 8px; }
-  h3 { font-size: 16px; color: ${palette.dark}; margin: 20px 0 8px; }
-  p, li { font-size: 14px; line-height: 1.7; color: #555; }
-  .swatch-row { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; }
-  .swatch { width: 100px; text-align: center; }
-  .swatch-box { width: 100px; height: 80px; border-radius: 10px; border: 1px solid #eee; }
-  .swatch-label { font-size: 11px; color: #888; margin-top: 4px; }
-  .swatch-hex { font-family: monospace; font-size: 11px; color: #666; }
-  .font-sample { padding: 20px; border-radius: 10px; background: #f8f8f8; margin: 12px 0; }
-  .logo-versions { display: flex; gap: 20px; margin: 16px 0; flex-wrap: wrap; }
-  .logo-v { text-align: center; }
-  .logo-v img { max-width: 120px; max-height: 80px; object-fit: contain; }
-  .logo-v-box { width: 140px; height: 100px; border-radius: 10px; display: flex; align-items: center; justify-content: center; border: 1px solid #eee; }
-  .print-btn { position: fixed; top: 20px; right: 20px; padding: 12px 28px; background: ${palette.primary}; color: ${contrastColor(palette.primary)}; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; z-index: 100; font-family: '${fonts.body}', sans-serif; }
-  .header-bar { height: 6px; background: linear-gradient(90deg, ${palette.primary}, ${palette.secondary}, ${palette.accent}); border-radius: 3px; margin-bottom: 32px; }
-  .rule-box { display: flex; gap: 24px; margin: 16px 0; }
-  .rule-card { flex: 1; padding: 16px; border-radius: 10px; border: 1px solid #eee; }
-  .rule-card.do { border-color: #4CAF50; } .rule-card.dont { border-color: #f44336; }
-  .rule-card h4 { font-size: 14px; margin-bottom: 6px; }
-  .rule-card.do h4 { color: #4CAF50; } .rule-card.dont h4 { color: #f44336; }
-  .rule-card p { font-size: 12px; }
-  .meta { font-size: 12px; color: #aaa; margin-top: 4px; }
-</style></head><body>
-<button class="print-btn no-print" onclick="window.print()">Imprimir / Guardar PDF</button>
-
-<div class="page">
-  <div class="header-bar"></div>
-  <img src="${logoSrc}" style="max-width:180px;max-height:100px;object-fit:contain;margin-bottom:24px" />
-  <h1>Guía de Marca</h1>
-  <p style="font-size:18px;color:${palette.primary};margin:8px 0 24px;font-family:'${fonts.display}',serif">${brandName}</p>
-  <p>Este documento define las reglas visuales de la marca <strong>${brandName}</strong>. Seguir estas pautas garantiza coherencia en todas las piezas de comunicación.</p>
-  <p class="meta">${industry} · Personalidad: ${personality}${audience ? ` · Audiencia: ${audience}` : ""}</p>
-  <p class="meta">Generado con BrandKit · ${new Date().toLocaleDateString("es-AR")}</p>
-
-  <h2>Paleta de colores</h2>
-  <p>Estos son los colores oficiales de la marca. Usá los códigos HEX exactos para mantener consistencia en digital.</p>
-  <div class="swatch-row">
-    ${Object.entries(palette).map(([k, v]) => `
-      <div class="swatch">
-        <div class="swatch-box" style="background:${v}"></div>
-        <div class="swatch-label">${k.charAt(0).toUpperCase()+k.slice(1)}</div>
-        <div class="swatch-hex">${v.toUpperCase()}</div>
-      </div>`).join("")}
-  </div>
-  <h3>Reglas de uso</h3>
-  <div class="rule-box">
-    <div class="rule-card do"><h4>✓ Correcto</h4><p>Usá el color primario para CTAs, botones y títulos destacados. El secundario para acompañar.</p></div>
-    <div class="rule-card dont"><h4>✗ Evitar</h4><p>No uses colores fuera de esta paleta. No combines primario + acento en texto sobre fondo.</p></div>
-  </div>
-</div>
-
-<div class="page">
-  <div class="header-bar"></div>
-  <h2>Tipografías</h2>
-  <p>El sistema tipográfico usa dos familias: una display para títulos y una body para textos.</p>
-  <div class="font-sample">
-    <p style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px">Display / Títulos</p>
-    <p style="font-family:'${fonts.display}',serif;font-size:36px;font-weight:700;color:#222;margin:8px 0">${fonts.display}</p>
-    <p style="font-family:'${fonts.display}',serif;font-size:18px;color:#666">Aa Bb Cc Dd Ee Ff Gg Hh Ii Jj Kk 1234567890</p>
-  </div>
-  <div class="font-sample">
-    <p style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px">Body / Texto</p>
-    <p style="font-family:'${fonts.body}',sans-serif;font-size:28px;color:#222;margin:8px 0">${fonts.body}</p>
-    <p style="font-family:'${fonts.body}',sans-serif;font-size:14px;color:#666;line-height:1.7">La tipografía correcta transmite profesionalismo y coherencia en cada punto de contacto con tu audiencia. Usá esta familia para cuerpos de texto, descripciones y contenido general.</p>
-  </div>
-  <h3>Jerarquía</h3>
-  <div style="padding:20px;background:#f8f8f8;border-radius:10px;margin:12px 0">
-    <p style="font-family:'${fonts.display}',serif;font-size:32px;font-weight:700;color:${palette.dark}">Título principal — H1</p>
-    <p style="font-family:'${fonts.display}',serif;font-size:24px;font-weight:700;color:${palette.dark};margin-top:8px">Subtítulo — H2</p>
-    <p style="font-family:'${fonts.body}',sans-serif;font-size:16px;color:#555;margin-top:8px">Texto de cuerpo — párrafo regular con la familia body.</p>
-    <p style="font-family:'${fonts.body}',sans-serif;font-size:12px;color:#999;margin-top:8px">Caption o texto secundario — tamaño reducido.</p>
-  </div>
-
-  <h2>Versiones del logo</h2>
-  <p>El logo debe usarse en una de estas versiones según el contexto. Nunca alteres proporciones ni colores fuera de estas opciones.</p>
-  <div class="logo-versions">
-    <div class="logo-v"><div class="logo-v-box" style="background:repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50%/14px 14px"><img src="${logoSrc}" /></div><p class="swatch-label">Original</p></div>
-    <div class="logo-v"><div class="logo-v-box" style="background:#1a1a1a"><img src="${logoSrc}" style="filter:brightness(0) invert(1)" /></div><p class="swatch-label">Blanco</p></div>
-    <div class="logo-v"><div class="logo-v-box" style="background:#fff"><img src="${logoSrc}" style="filter:brightness(0)" /></div><p class="swatch-label">Negro</p></div>
-  </div>
-  <div class="rule-box">
-    <div class="rule-card do"><h4>✓ Correcto</h4><p>Versión original sobre fondos claros. Versión blanca sobre fondos oscuros o fotos.</p></div>
-    <div class="rule-card dont"><h4>✗ Evitar</h4><p>No estires, rotes, ni agregues sombras o efectos al logo. No lo uses sobre fondos que dificulten la lectura.</p></div>
-  </div>
-</div>
-
-<div class="page">
-  <div class="header-bar"></div>
-  <h2>Aplicaciones</h2>
-  <p>Ejemplos de cómo se aplica la marca en distintos puntos de contacto.</p>
-  
-  <h3>Redes sociales</h3>
-  <p>Usá la paleta de colores como fondo o acento. El logo va siempre en la misma posición (centro superior o esquina). Tipografía display para títulos, body para cuerpo.</p>
-  <div style="display:flex;gap:16px;margin:16px 0">
-    <div style="width:120px;height:120px;border-radius:8px;background:${palette.light};border:1px solid #eee;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px">
-      <div style="width:8px;height:8px;border-radius:50%;background:${palette.primary};margin-bottom:6px"></div>
-      <div style="width:60%;height:3px;background:${palette.dark};border-radius:2px;margin:3px 0"></div>
-      <div style="width:40%;height:3px;background:${palette.neutral};border-radius:2px;margin:3px 0"></div>
-      <div style="padding:4px 12px;background:${palette.primary};border-radius:4px;margin-top:8px"><span style="font-size:7px;color:${contrastColor(palette.primary)}">CTA</span></div>
-    </div>
-    <div style="width:67px;height:120px;border-radius:8px;background:${palette.light};border:1px solid #eee;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px">
-      <div style="width:8px;height:8px;border-radius:50%;background:${palette.primary};margin-bottom:4px"></div>
-      <div style="width:70%;height:2px;background:${palette.dark};border-radius:2px;margin:2px 0"></div>
-      <div style="width:50%;height:2px;background:${palette.neutral};border-radius:2px;margin:2px 0"></div>
-    </div>
-  </div>
-  
-  <h3>Papelería</h3>
-  <p>El color primario se usa como acento (líneas, bordes, íconos). Nunca como fondo completo en documentos impresos — usá blanco o el tono claro de la paleta.</p>
-
-  <div style="margin-top:32px;padding:20px;background:#f5f5f5;border-radius:10px;text-align:center">
-    <p style="font-size:12px;color:#999">Guía generada con BrandKit · ${new Date().toLocaleDateString("es-AR")}</p>
-    <p style="font-size:11px;color:#bbb;margin-top:4px">brandkit.app</p>
-  </div>
-</div>
-</body></html>`;
+  ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
 }
 
 // ── Constants ──
@@ -427,6 +587,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
   const { brandName, industry, personality, audience, logoHasName } = brandData;
   const f = fonts;
   const [downloading, setDownloading] = useState(null);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
 
   const handleDownloadTemplate = async (type) => {
     setDownloading(type);
@@ -437,26 +598,24 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
     setDownloading(null);
   };
 
-  const handleDownloadGuide = () => {
-    const html = generateBrandGuideHTML({ brandName, industry, personality, audience, palette, fonts: f, logoSrc });
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
+  const handleDownloadGuide = async () => {
+    setGeneratingPDF(true);
+    try {
+      await generateBrandGuidePDF({ brandName, industry, personality, audience, palette, fonts: f, logoSrc });
+    } catch(e) { console.error("PDF error:", e); alert("Error generando PDF. Intentá de nuevo."); }
+    setGeneratingPDF(false);
   };
 
-  const handleDownloadLogoVersion = (filter, suffix, bg) => {
+  const handleDownloadLogoVersion = (filterVal, suffix) => {
     const canvas = document.createElement("canvas");
-    const size = 1024;
-    canvas.width = size; canvas.height = size;
+    const size = 1024; canvas.width = size; canvas.height = size;
     const ctx = canvas.getContext("2d");
-    // Transparent background — no fill
-    const img = new Image();
-    img.crossOrigin = "anonymous";
+    const img = new Image(); img.crossOrigin = "anonymous";
     img.onload = () => {
       const scale = Math.min((size*0.7)/img.width, (size*0.7)/img.height);
       const w = img.width*scale, h = img.height*scale;
-      if (filter === "white") { ctx.filter = "brightness(0) invert(1)"; }
-      else if (filter === "black") { ctx.filter = "brightness(0)"; }
+      if (filterVal === "white") { ctx.filter = "brightness(0) invert(1)"; }
+      else if (filterVal === "black") { ctx.filter = "brightness(0)"; }
       ctx.drawImage(img, (size-w)/2, (size-h)/2, w, h);
       downloadDataUrl(canvas.toDataURL("image/png"), `${brandName.replace(/\s+/g,"-")}-logo-${suffix}.png`);
     };
@@ -467,7 +626,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
     <button onClick={onClick} disabled={loading}
       style={{ padding:small?"6px 14px":"10px 20px",borderRadius:8,border:"1px solid #333",background:loading?"#1a1a1a":"rgba(80,200,120,0.08)",
         color:loading?"#555":"#50c878",fontSize:small?11:12,fontWeight:600,cursor:loading?"wait":"pointer",transition:"all 0.15s",whiteSpace:"nowrap" }}>
-      {loading ? "⏳" : children}
+      {loading ? "⏳ Generando..." : children}
     </button>
   );
 
@@ -497,27 +656,6 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
     </div>
   );
 
-  const LogoVersions = () => (
-    <div style={{ display:"flex",gap:16,flexWrap:"wrap" }}>
-      {[
-        { label:"Original",bg:CHECKER,filter:null,suffix:"original",desc:"Fondo transparente" },
-        { label:"Blanco",bg:"#1a1a1a",filter:"brightness(0) invert(1)",suffix:"blanco",desc:"Para fondos oscuros" },
-        { label:"Negro",bg:"#ffffff",filter:"brightness(0)",suffix:"negro",desc:"Para fondos claros" },
-        { label:"Sin fondo",bg:CHECKER,filter:null,suffix:"sin-fondo",desc:"PNG transparente" },
-      ].map(v=>(
-        <div key={v.suffix} style={{ textAlign:"center" }}>
-          <div style={{ width:120,height:90,borderRadius:10,background:v.bg,display:"flex",alignItems:"center",justifyContent:"center",border:"1px solid #2a2a2a" }}>
-            <img src={logoSrc} alt="" style={{ maxWidth:"75%",maxHeight:"70%",objectFit:"contain",filter:v.filter||"none" }} />
-          </div>
-          <div style={{ fontSize:11,color:"#aaa",marginTop:6 }}>{v.label}</div>
-          <div style={{ fontSize:9,color:"#555" }}>{v.desc}</div>
-          {isPro&&<Btn small onClick={()=>handleDownloadLogoVersion(v.filter?"white":"black"==="white"?v.suffix==="blanco"?"white":"black":v.suffix==="negro"?"black":null,v.suffix)}>↓ PNG</Btn>}
-        </div>
-      ))}
-    </div>
-  );
-
-  // Fixed logo download
   const LogoVersionsPro = () => (
     <div style={{ display:"flex",gap:16,flexWrap:"wrap" }}>
       {[
@@ -610,7 +748,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
       {/* PRO: Logo versions */}
       <Section title="Versiones del logo" locked proPreview={<LogoVersionsPro />}>
         <LogoVersionsPro />
-        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Cada versión se descarga como PNG 1024×1024 con fondo transparente. Las versiones blanco/negro mantienen la silueta de tu logo sin agregar fondo.</p>
+        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Cada versión se descarga como PNG 1024×1024 con fondo transparente.</p>
       </Section>
 
       {/* PRO: Templates */}
@@ -627,7 +765,6 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
             </div>
           ))}
         </div>
-        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Los PNGs se generan con tu logo, paleta y tipografía aplicados. Podés editarlos en Canva, Figma o cualquier editor.</p>
       </Section>
 
       {/* PRO: Mockups */}
@@ -643,10 +780,9 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
             </div>
           ))}
         </div>
-        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Los mockups fotorrealistas requieren procesamiento server-side. Disponibles en la versión deploy.</p>
       </Section>
 
-      {/* PRO: Brand guide */}
+      {/* PRO: Brand guide PDF */}
       <Section title="Guía de marca (PDF)" locked proPreview={
         <div style={{ padding:16,borderRadius:10,background:"#111",textAlign:"center" }}>
           <span style={{ fontSize:32 }}>📄</span>
@@ -658,11 +794,13 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
             <div style={{ width:48,height:64,borderRadius:6,background:`linear-gradient(135deg, ${palette.primary}, ${palette.secondary})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20 }}>📄</div>
             <div style={{ flex:1 }}>
               <div style={{ fontSize:14,fontWeight:700,color:"#eee" }}>Guía de marca — {brandName}</div>
-              <div style={{ fontSize:12,color:"#888",marginTop:2 }}>3 páginas · Paleta · Tipografías · Logo · Aplicaciones</div>
+              <div style={{ fontSize:12,color:"#888",marginTop:2 }}>PDF de 3 páginas · Paleta · Tipografías · Logo · Aplicaciones</div>
             </div>
           </div>
-          <p style={{ fontSize:12,color:"#777",lineHeight:1.6,marginBottom:16 }}>Se abre en una pestaña nueva lista para imprimir o guardar como PDF (Ctrl+P → "Guardar como PDF").</p>
-          <Btn onClick={handleDownloadGuide}>Abrir guía de marca →</Btn>
+          <p style={{ fontSize:12,color:"#777",lineHeight:1.6,marginBottom:16 }}>Se genera y descarga automáticamente como PDF.</p>
+          <Btn onClick={handleDownloadGuide} loading={generatingPDF}>
+            {generatingPDF ? "⏳ Generando PDF..." : "↓ Descargar guía de marca (PDF)"}
+          </Btn>
         </div>
       </Section>
 
@@ -671,7 +809,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
         <div style={{ padding:28,borderRadius:16,textAlign:"center",background:"linear-gradient(135deg, rgba(232,168,56,0.1), rgba(232,168,56,0.02))",border:"1px solid rgba(232,168,56,0.2)",marginTop:8 }}>
           <h3 style={{ fontSize:18,color:"#fafafa",margin:"0 0 8px",fontFamily:"'Space Grotesk', sans-serif" }}>Desbloqueá tu kit completo</h3>
           <p style={{ fontSize:14,color:"#999",margin:"0 0 6px" }}>Logo en versiones · Templates descargables · Guía PDF</p>
-          <p style={{ fontSize:12,color:"#666",margin:"0 0 20px" }}>Pago único — descargá todo al instante.</p>
+          <p style={{ fontSize:12,color:"#666",margin:"0 0 20px" }}>Pago único · Sin suscripción · Descargá todo al instante.</p>
           <button style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#e8a838",color:"#0a0a0a",fontSize:15,fontWeight:700,cursor:"pointer" }}>Obtener Kit Pro — USD $9.99</button>
         </div>
       )}
