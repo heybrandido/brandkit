@@ -1,0 +1,733 @@
+import { useState, useRef, useCallback, useEffect } from "react";
+
+// ── Color extraction ──
+function extractColors(imageElement, numColors = 8) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const size = 200;
+  canvas.width = size; canvas.height = size;
+  ctx.drawImage(imageElement, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  const pixels = [];
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
+    if (a < 100) continue;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const sat = max === 0 ? 0 : (max - min) / max;
+    if (r > 245 && g > 245 && b > 245) continue;
+    if (r < 10 && g < 10 && b < 10) continue;
+    if (max > 220 && sat < 0.05) continue;
+    pixels.push([r, g, b]);
+  }
+  if (pixels.length === 0) return [{ hex: "#333333", rgb: [51,51,51] }];
+  const step = Math.max(1, Math.floor(pixels.length / numColors));
+  const init = [];
+  for (let i = 0; i < numColors && i * step < pixels.length; i++) init.push([...pixels[i * step]]);
+  return kMeans(pixels, init);
+}
+function kMeans(pixels, initC) {
+  let centroids = initC; const k = centroids.length;
+  for (let iter = 0; iter < 25; iter++) {
+    const cl = Array.from({ length: k }, () => []);
+    pixels.forEach(p => { let mD = Infinity, mI = 0; centroids.forEach((c, i) => { const d = (p[0]-c[0])**2+(p[1]-c[1])**2+(p[2]-c[2])**2; if (d < mD) { mD = d; mI = i; } }); cl[mI].push(p); });
+    centroids = cl.map((c, i) => c.length === 0 ? centroids[i] : c.reduce((a, p) => [a[0]+p[0],a[1]+p[1],a[2]+p[2]], [0,0,0]).map(v => Math.round(v / c.length)));
+  }
+  const counts = Array(k).fill(0);
+  pixels.forEach(p => { let mD = Infinity, mI = 0; centroids.forEach((c, i) => { const d = (p[0]-c[0])**2+(p[1]-c[1])**2+(p[2]-c[2])**2; if (d < mD) { mD = d; mI = i; } }); counts[mI]++; });
+  const results = centroids.map((c, i) => ({ rgb: c, hex: rgbToHex(c), count: counts[i] })).filter(c => c.count > pixels.length * 0.02).sort((a, b) => b.count - a.count);
+  const unique = [];
+  results.forEach(c => { if (!unique.some(u => Math.sqrt((u.rgb[0]-c.rgb[0])**2+(u.rgb[1]-c.rgb[1])**2+(u.rgb[2]-c.rgb[2])**2) < 40)) unique.push(c); });
+  return unique.slice(0, 6);
+}
+function rgbToHex([r,g,b]) { return "#"+[r,g,b].map(v=>v.toString(16).padStart(2,"0")).join(""); }
+function hexToHSL(hex) {
+  let r=parseInt(hex.slice(1,3),16)/255, g=parseInt(hex.slice(3,5),16)/255, b=parseInt(hex.slice(5,7),16)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b); let h,s,l=(max+min)/2;
+  if(max===min){h=s=0}else{const d=max-min;s=l>.5?d/(2-max-min):d/(max+min);switch(max){case r:h=((g-b)/d+(g<b?6:0))/6;break;case g:h=((b-r)/d+2)/6;break;case b:h=((r-g)/d+4)/6;break;}}
+  return[Math.round(h*360),Math.round(s*100),Math.round(l*100)];
+}
+function hslToHex(h,s,l) {
+  s/=100;l/=100;const k=n=>(n+h/30)%12;const a=s*Math.min(l,1-l);const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+  return rgbToHex([Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)]);
+}
+function generateHarmonicPalette(colors) {
+  const p = colors[0]; const [h,s,l] = hexToHSL(p.hex);
+  return { primary:p.hex, secondary:colors[1]?.hex||hslToHex((h+30)%360,s,l), accent:colors[2]?.hex||hslToHex((h+180)%360,Math.min(s+10,100),l), light:hslToHex(h,Math.max(s-30,5),95), dark:hslToHex(h,Math.max(s-10,10),12), neutral:hslToHex(h,5,55) };
+}
+function getLuminance(hex) { return hexToHSL(hex)[2]; }
+function contrastColor(bg) { return getLuminance(bg) < 45 ? "#ffffff" : "#111111"; }
+
+// ── Download helpers ──
+function downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function loadImageForCanvas(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function generateTemplatePNG({ type, palette, brandName, logoHasName, logoSrc, displayFont }) {
+  const dims = { post: [1080,1080], story: [1080,1920], cover: [1640,924] };
+  const [w, h] = dims[type] || [1080,1080];
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+
+  // Background
+  ctx.fillStyle = palette.light;
+  ctx.fillRect(0, 0, w, h);
+
+  // Accent bar
+  ctx.fillStyle = palette.primary;
+  if (type === "story") {
+    ctx.fillRect(0, 0, w, 8);
+    ctx.fillRect(0, h - 8, w, 8);
+  } else {
+    ctx.fillRect(0, h - 12, w, 12);
+  }
+
+  // Side accent
+  ctx.fillStyle = palette.secondary;
+  if (type === "cover") {
+    ctx.fillRect(0, 0, 8, h);
+  }
+
+  // Logo
+  const logo = await loadImageForCanvas(logoSrc);
+  if (logo) {
+    const maxLogoW = w * 0.3;
+    const maxLogoH = h * 0.2;
+    const scale = Math.min(maxLogoW / logo.width, maxLogoH / logo.height);
+    const lw = logo.width * scale;
+    const lh = logo.height * scale;
+    const lx = (w - lw) / 2;
+    const ly = type === "story" ? h * 0.15 : h * 0.12;
+    ctx.drawImage(logo, lx, ly, lw, lh);
+  }
+
+  // Brand name
+  if (!logoHasName) {
+    const fontSize = type === "story" ? 64 : type === "cover" ? 56 : 72;
+    ctx.font = `bold ${fontSize}px '${displayFont}', Georgia, serif`;
+    ctx.fillStyle = palette.dark;
+    ctx.textAlign = "center";
+    ctx.fillText(brandName, w / 2, type === "story" ? h * 0.42 : h * 0.48);
+  }
+
+  // Placeholder text areas
+  ctx.fillStyle = palette.neutral + "44";
+  const centerY = type === "story" ? h * 0.52 : h * 0.58;
+  ctx.fillRect(w * 0.15, centerY, w * 0.7, 3);
+  ctx.fillRect(w * 0.25, centerY + 20, w * 0.5, 3);
+
+  // CTA box
+  const ctaY = type === "story" ? h * 0.72 : h * 0.75;
+  ctx.fillStyle = palette.primary;
+  const ctaW = 240, ctaH = 56;
+  const ctaX = (w - ctaW) / 2;
+  roundRect(ctx, ctaX, ctaY, ctaW, ctaH, 12);
+  ctx.fill();
+  ctx.font = `bold 22px '${displayFont}', sans-serif`;
+  ctx.fillStyle = contrastColor(palette.primary);
+  ctx.textAlign = "center";
+  ctx.fillText("Tu CTA acá", w / 2, ctaY + 36);
+
+  // Watermark
+  ctx.font = "16px sans-serif";
+  ctx.fillStyle = palette.neutral + "66";
+  ctx.textAlign = "right";
+  ctx.fillText("Generado con BrandKit", w - 30, h - 24);
+
+  return canvas.toDataURL("image/png");
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function generateBrandGuideHTML({ brandName, industry, personality, audience, palette, fonts, logoSrc }) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Guía de Marca — ${brandName}</title>
+<link href="https://fonts.googleapis.com/css2?family=${fonts.display.replace(/ /g,"+")}:wght@400;700&family=${fonts.body.replace(/ /g,"+")}:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4; margin: 40px; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: '${fonts.body}', sans-serif; color: #222; background: #fff; }
+  .page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 48px; page-break-after: always; }
+  @media print { .page { padding: 0; width: 100%; } .no-print { display: none; } }
+  h1 { font-family: '${fonts.display}', serif; font-size: 42px; color: ${palette.dark}; }
+  h2 { font-family: '${fonts.display}', serif; font-size: 28px; color: ${palette.primary}; margin: 32px 0 16px; border-bottom: 2px solid ${palette.primary}22; padding-bottom: 8px; }
+  h3 { font-size: 16px; color: ${palette.dark}; margin: 20px 0 8px; }
+  p, li { font-size: 14px; line-height: 1.7; color: #555; }
+  .swatch-row { display: flex; gap: 16px; margin: 16px 0; flex-wrap: wrap; }
+  .swatch { width: 100px; text-align: center; }
+  .swatch-box { width: 100px; height: 80px; border-radius: 10px; border: 1px solid #eee; }
+  .swatch-label { font-size: 11px; color: #888; margin-top: 4px; }
+  .swatch-hex { font-family: monospace; font-size: 11px; color: #666; }
+  .font-sample { padding: 20px; border-radius: 10px; background: #f8f8f8; margin: 12px 0; }
+  .logo-versions { display: flex; gap: 20px; margin: 16px 0; flex-wrap: wrap; }
+  .logo-v { text-align: center; }
+  .logo-v img { max-width: 120px; max-height: 80px; object-fit: contain; }
+  .logo-v-box { width: 140px; height: 100px; border-radius: 10px; display: flex; align-items: center; justify-content: center; border: 1px solid #eee; }
+  .print-btn { position: fixed; top: 20px; right: 20px; padding: 12px 28px; background: ${palette.primary}; color: ${contrastColor(palette.primary)}; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; z-index: 100; font-family: '${fonts.body}', sans-serif; }
+  .header-bar { height: 6px; background: linear-gradient(90deg, ${palette.primary}, ${palette.secondary}, ${palette.accent}); border-radius: 3px; margin-bottom: 32px; }
+  .rule-box { display: flex; gap: 24px; margin: 16px 0; }
+  .rule-card { flex: 1; padding: 16px; border-radius: 10px; border: 1px solid #eee; }
+  .rule-card.do { border-color: #4CAF50; } .rule-card.dont { border-color: #f44336; }
+  .rule-card h4 { font-size: 14px; margin-bottom: 6px; }
+  .rule-card.do h4 { color: #4CAF50; } .rule-card.dont h4 { color: #f44336; }
+  .rule-card p { font-size: 12px; }
+  .meta { font-size: 12px; color: #aaa; margin-top: 4px; }
+</style></head><body>
+<button class="print-btn no-print" onclick="window.print()">Imprimir / Guardar PDF</button>
+
+<div class="page">
+  <div class="header-bar"></div>
+  <img src="${logoSrc}" style="max-width:180px;max-height:100px;object-fit:contain;margin-bottom:24px" />
+  <h1>Guía de Marca</h1>
+  <p style="font-size:18px;color:${palette.primary};margin:8px 0 24px;font-family:'${fonts.display}',serif">${brandName}</p>
+  <p>Este documento define las reglas visuales de la marca <strong>${brandName}</strong>. Seguir estas pautas garantiza coherencia en todas las piezas de comunicación.</p>
+  <p class="meta">${industry} · Personalidad: ${personality}${audience ? ` · Audiencia: ${audience}` : ""}</p>
+  <p class="meta">Generado con BrandKit · ${new Date().toLocaleDateString("es-AR")}</p>
+
+  <h2>Paleta de colores</h2>
+  <p>Estos son los colores oficiales de la marca. Usá los códigos HEX exactos para mantener consistencia en digital.</p>
+  <div class="swatch-row">
+    ${Object.entries(palette).map(([k, v]) => `
+      <div class="swatch">
+        <div class="swatch-box" style="background:${v}"></div>
+        <div class="swatch-label">${k.charAt(0).toUpperCase()+k.slice(1)}</div>
+        <div class="swatch-hex">${v.toUpperCase()}</div>
+      </div>`).join("")}
+  </div>
+  <h3>Reglas de uso</h3>
+  <div class="rule-box">
+    <div class="rule-card do"><h4>✓ Correcto</h4><p>Usá el color primario para CTAs, botones y títulos destacados. El secundario para acompañar.</p></div>
+    <div class="rule-card dont"><h4>✗ Evitar</h4><p>No uses colores fuera de esta paleta. No combines primario + acento en texto sobre fondo.</p></div>
+  </div>
+</div>
+
+<div class="page">
+  <div class="header-bar"></div>
+  <h2>Tipografías</h2>
+  <p>El sistema tipográfico usa dos familias: una display para títulos y una body para textos.</p>
+  <div class="font-sample">
+    <p style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px">Display / Títulos</p>
+    <p style="font-family:'${fonts.display}',serif;font-size:36px;font-weight:700;color:#222;margin:8px 0">${fonts.display}</p>
+    <p style="font-family:'${fonts.display}',serif;font-size:18px;color:#666">Aa Bb Cc Dd Ee Ff Gg Hh Ii Jj Kk 1234567890</p>
+  </div>
+  <div class="font-sample">
+    <p style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px">Body / Texto</p>
+    <p style="font-family:'${fonts.body}',sans-serif;font-size:28px;color:#222;margin:8px 0">${fonts.body}</p>
+    <p style="font-family:'${fonts.body}',sans-serif;font-size:14px;color:#666;line-height:1.7">La tipografía correcta transmite profesionalismo y coherencia en cada punto de contacto con tu audiencia. Usá esta familia para cuerpos de texto, descripciones y contenido general.</p>
+  </div>
+  <h3>Jerarquía</h3>
+  <div style="padding:20px;background:#f8f8f8;border-radius:10px;margin:12px 0">
+    <p style="font-family:'${fonts.display}',serif;font-size:32px;font-weight:700;color:${palette.dark}">Título principal — H1</p>
+    <p style="font-family:'${fonts.display}',serif;font-size:24px;font-weight:700;color:${palette.dark};margin-top:8px">Subtítulo — H2</p>
+    <p style="font-family:'${fonts.body}',sans-serif;font-size:16px;color:#555;margin-top:8px">Texto de cuerpo — párrafo regular con la familia body.</p>
+    <p style="font-family:'${fonts.body}',sans-serif;font-size:12px;color:#999;margin-top:8px">Caption o texto secundario — tamaño reducido.</p>
+  </div>
+
+  <h2>Versiones del logo</h2>
+  <p>El logo debe usarse en una de estas versiones según el contexto. Nunca alteres proporciones ni colores fuera de estas opciones.</p>
+  <div class="logo-versions">
+    <div class="logo-v"><div class="logo-v-box" style="background:repeating-conic-gradient(#eee 0% 25%, #fff 0% 50%) 50%/14px 14px"><img src="${logoSrc}" /></div><p class="swatch-label">Original</p></div>
+    <div class="logo-v"><div class="logo-v-box" style="background:#1a1a1a"><img src="${logoSrc}" style="filter:brightness(0) invert(1)" /></div><p class="swatch-label">Blanco</p></div>
+    <div class="logo-v"><div class="logo-v-box" style="background:#fff"><img src="${logoSrc}" style="filter:brightness(0)" /></div><p class="swatch-label">Negro</p></div>
+  </div>
+  <div class="rule-box">
+    <div class="rule-card do"><h4>✓ Correcto</h4><p>Versión original sobre fondos claros. Versión blanca sobre fondos oscuros o fotos.</p></div>
+    <div class="rule-card dont"><h4>✗ Evitar</h4><p>No estires, rotes, ni agregues sombras o efectos al logo. No lo uses sobre fondos que dificulten la lectura.</p></div>
+  </div>
+</div>
+
+<div class="page">
+  <div class="header-bar"></div>
+  <h2>Aplicaciones</h2>
+  <p>Ejemplos de cómo se aplica la marca en distintos puntos de contacto.</p>
+  
+  <h3>Redes sociales</h3>
+  <p>Usá la paleta de colores como fondo o acento. El logo va siempre en la misma posición (centro superior o esquina). Tipografía display para títulos, body para cuerpo.</p>
+  <div style="display:flex;gap:16px;margin:16px 0">
+    <div style="width:120px;height:120px;border-radius:8px;background:${palette.light};border:1px solid #eee;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px">
+      <div style="width:8px;height:8px;border-radius:50%;background:${palette.primary};margin-bottom:6px"></div>
+      <div style="width:60%;height:3px;background:${palette.dark};border-radius:2px;margin:3px 0"></div>
+      <div style="width:40%;height:3px;background:${palette.neutral};border-radius:2px;margin:3px 0"></div>
+      <div style="padding:4px 12px;background:${palette.primary};border-radius:4px;margin-top:8px"><span style="font-size:7px;color:${contrastColor(palette.primary)}">CTA</span></div>
+    </div>
+    <div style="width:67px;height:120px;border-radius:8px;background:${palette.light};border:1px solid #eee;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px">
+      <div style="width:8px;height:8px;border-radius:50%;background:${palette.primary};margin-bottom:4px"></div>
+      <div style="width:70%;height:2px;background:${palette.dark};border-radius:2px;margin:2px 0"></div>
+      <div style="width:50%;height:2px;background:${palette.neutral};border-radius:2px;margin:2px 0"></div>
+    </div>
+  </div>
+  
+  <h3>Papelería</h3>
+  <p>El color primario se usa como acento (líneas, bordes, íconos). Nunca como fondo completo en documentos impresos — usá blanco o el tono claro de la paleta.</p>
+
+  <div style="margin-top:32px;padding:20px;background:#f5f5f5;border-radius:10px;text-align:center">
+    <p style="font-size:12px;color:#999">Guía generada con BrandKit · ${new Date().toLocaleDateString("es-AR")}</p>
+    <p style="font-size:11px;color:#bbb;margin-top:4px">brandkit.app</p>
+  </div>
+</div>
+</body></html>`;
+}
+
+// ── Constants ──
+const CHECKER = "repeating-conic-gradient(#e0e0e0 0% 25%, #fff 0% 50%) 50% / 16px 16px";
+const GRID_BG = `url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='g' patternUnits='userSpaceOnUse' width='20' height='20'%3E%3Cpath d='M 20 0 L 0 0 0 20' fill='none' stroke='%23e0e0e0' stroke-width='0.5'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='%23ffffff'/%3E%3Crect width='100%25' height='100%25' fill='url(%23g)'/%3E%3C/svg%3E")`;
+const INDUSTRIES = ["Gastronomía","Salud y bienestar","Tecnología","Moda y belleza","Educación","Construcción","Comercio","Servicios profesionales","Fitness y deporte","Arte y cultura","Otro"];
+const PERSONALITIES = [
+  {label:"Profesional",desc:"Serio, confiable, corporativo"},{label:"Creativo",desc:"Original, artístico, disruptivo"},
+  {label:"Cercano",desc:"Amigable, cálido, accesible"},{label:"Premium",desc:"Exclusivo, elegante, sofisticado"},
+  {label:"Dinámico",desc:"Joven, enérgico, moderno"},{label:"Natural",desc:"Orgánico, sustentable, auténtico"},
+];
+const FONT_PAIRINGS = {
+  Profesional:{display:"DM Serif Display",body:"Inter",mono:"JetBrains Mono"},
+  Creativo:{display:"Space Grotesk",body:"DM Sans",mono:"Fira Code"},
+  Cercano:{display:"Nunito",body:"Open Sans",mono:"Source Code Pro"},
+  Premium:{display:"Playfair Display",body:"Lato",mono:"IBM Plex Mono"},
+  Dinámico:{display:"Outfit",body:"Plus Jakarta Sans",mono:"JetBrains Mono"},
+  Natural:{display:"Fraunces",body:"Atkinson Hyperlegible",mono:"Fira Code"},
+};
+const MOCKUP_TYPES = [
+  {name:"Tarjeta de presentación",desc:"Frente y dorso con tu marca",icon:"💳"},
+  {name:"Membrete A4",desc:"Hoja carta con header y footer",icon:"📄"},
+  {name:"Firma de email",desc:"Bloque HTML para Gmail/Outlook",icon:"✉️"},
+  {name:"Bolsa / Packaging",desc:"Bolsa de papel o caja con logo",icon:"🛍️"},
+  {name:"Remera / Uniforme",desc:"Aplicación en indumentaria",icon:"👕"},
+  {name:"Cartelería / Banner",desc:"Banner físico o roll-up",icon:"🪧"},
+  {name:"Vehículo",desc:"Ploteo vehicular con tu identidad",icon:"🚗"},
+  {name:"Fachada / Local",desc:"Tu logo en frente de local",icon:"🏪"},
+];
+
+// ── Upload ──
+function UploadStep({ onUpload }) {
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef();
+  const handleFile = (f) => { if (!f||!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload=(e)=>onUpload(e.target.result); r.readAsDataURL(f); };
+  return (
+    <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:32,padding:"48px 20px" }}>
+      <div style={{ textAlign:"center",maxWidth:480 }}>
+        <h1 style={{ fontSize:28,fontWeight:700,color:"#fafafa",margin:0,letterSpacing:"-0.02em",fontFamily:"'Space Grotesk', sans-serif" }}>Subí tu logo</h1>
+        <p style={{ fontSize:15,color:"#8a8a8a",marginTop:12,lineHeight:1.6 }}>Analizamos los colores y el estilo de tu logo para construir todo el sistema visual de tu marca.</p>
+      </div>
+      <div onDragOver={e=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)}
+        onDrop={e=>{e.preventDefault();setDragging(false);handleFile(e.dataTransfer.files[0])}} onClick={()=>fileRef.current?.click()}
+        style={{ width:"100%",maxWidth:400,height:220,border:`2px dashed ${dragging?"#e8a838":"#333"}`,borderRadius:16,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,cursor:"pointer",transition:"all 0.2s",background:dragging?"rgba(232,168,56,0.05)":"rgba(255,255,255,0.02)" }}>
+        <div style={{ fontSize:48,opacity:0.4 }}>⬆</div>
+        <div style={{ color:"#aaa",fontSize:14,textAlign:"center",padding:"0 20px" }}>Arrastrá tu logo acá o hacé click<br/><span style={{ fontSize:12,color:"#666" }}>PNG, JPG o SVG — fondo transparente recomendado</span></div>
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleFile(e.target.files[0])} />
+    </div>
+  );
+}
+
+// ── Questions ──
+function QuestionsStep({ logoSrc, colors, onComplete }) {
+  const [industry, setIndustry] = useState("");
+  const [personality, setPersonality] = useState("");
+  const [brandName, setBrandName] = useState("");
+  const [audience, setAudience] = useState("");
+  const [logoHasName, setLogoHasName] = useState(false);
+  const ok = industry && personality && brandName;
+  return (
+    <div style={{ display:"flex",flexDirection:"column",gap:28,padding:"32px 20px",maxWidth:600,margin:"0 auto" }}>
+      <div style={{ display:"flex",alignItems:"center",gap:20 }}>
+        <img src={logoSrc} alt="" style={{ width:64,height:64,objectFit:"contain",borderRadius:8,background:CHECKER,padding:8 }} />
+        <div>
+          <p style={{ color:"#888",fontSize:13,margin:0 }}>Colores detectados</p>
+          <div style={{ display:"flex",gap:6,marginTop:6 }}>
+            {colors.slice(0,8).map((c,i)=>(
+              <div key={i} style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:2 }}>
+                <div style={{ width:28,height:28,borderRadius:6,background:c.hex,border:"1px solid rgba(255,255,255,0.1)" }} title={c.hex} />
+                <span style={{ fontSize:7,color:"#666",fontFamily:"monospace" }}>{c.hex}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div>
+        <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:8 }}>Nombre de tu marca *</label>
+        <input value={brandName} onChange={e=>setBrandName(e.target.value)} placeholder="Ej: Café Morena, TechSol..."
+          style={{ width:"100%",padding:"12px 16px",background:"#141414",border:"1px solid #2a2a2a",borderRadius:10,color:"#fafafa",fontSize:15,outline:"none",boxSizing:"border-box" }} />
+        <label style={{ display:"flex",alignItems:"center",gap:8,marginTop:10,cursor:"pointer",fontSize:13,color:"#888" }} onClick={()=>setLogoHasName(!logoHasName)}>
+          <div style={{ width:18,height:18,borderRadius:4,border:"1px solid #444",background:logoHasName?"#e8a838":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s",flexShrink:0 }}>
+            {logoHasName&&<span style={{ color:"#0a0a0a",fontSize:12,fontWeight:700 }}>✓</span>}
+          </div>Mi logo ya incluye el nombre
+        </label>
+      </div>
+      <div>
+        <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:10 }}>Rubro *</label>
+        <div style={{ display:"flex",flexWrap:"wrap",gap:8 }}>
+          {INDUSTRIES.map(ind=>(<button key={ind} onClick={()=>setIndustry(ind)} style={{ padding:"8px 16px",borderRadius:20,border:"1px solid",borderColor:industry===ind?"#e8a838":"#2a2a2a",background:industry===ind?"rgba(232,168,56,0.12)":"transparent",color:industry===ind?"#e8a838":"#999",fontSize:13,cursor:"pointer" }}>{ind}</button>))}
+        </div>
+      </div>
+      <div>
+        <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:10 }}>Personalidad de marca *</label>
+        <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+          {PERSONALITIES.map(p=>(<button key={p.label} onClick={()=>setPersonality(p.label)} style={{ padding:"12px 16px",borderRadius:10,border:"1px solid",borderColor:personality===p.label?"#e8a838":"#2a2a2a",background:personality===p.label?"rgba(232,168,56,0.12)":"#0f0f0f",textAlign:"left",cursor:"pointer" }}>
+            <div style={{ color:personality===p.label?"#e8a838":"#ddd",fontSize:14,fontWeight:600 }}>{p.label}</div>
+            <div style={{ color:"#777",fontSize:12,marginTop:2 }}>{p.desc}</div>
+          </button>))}
+        </div>
+      </div>
+      <div>
+        <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:8 }}>¿A quién le vendés? (opcional)</label>
+        <input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Ej: Mujeres de 25-45, empresas B2B..."
+          style={{ width:"100%",padding:"12px 16px",background:"#141414",border:"1px solid #2a2a2a",borderRadius:10,color:"#fafafa",fontSize:15,outline:"none",boxSizing:"border-box" }} />
+      </div>
+      <button onClick={()=>onComplete({industry,personality,brandName,audience,logoHasName})} disabled={!ok}
+        style={{ padding:"14px 32px",borderRadius:12,border:"none",background:ok?"#e8a838":"#2a2a2a",color:ok?"#0a0a0a":"#555",fontSize:15,fontWeight:700,cursor:ok?"pointer":"default",alignSelf:"flex-start" }}>
+        Generar mi kit de marca →
+      </button>
+    </div>
+  );
+}
+
+// ── Generating ──
+function GeneratingStep() {
+  const [s, setS] = useState(0);
+  const msgs = ["Analizando tu logo...","Extrayendo colores...","Construyendo paleta...","Seleccionando tipografías...","Preparando tu kit..."];
+  useEffect(() => { const t = setInterval(()=>setS(v=>Math.min(v+1,msgs.length-1)),1100); return()=>clearInterval(t); }, []);
+  return (
+    <div style={{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:24,padding:60,minHeight:300 }}>
+      <div style={{ width:48,height:48,border:"3px solid #2a2a2a",borderTopColor:"#e8a838",borderRadius:"50%",animation:"spin 0.8s linear infinite" }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+      <p style={{ color:"#ccc",fontSize:16 }}>{msgs[s]}</p>
+    </div>
+  );
+}
+
+// ── Result ──
+function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
+  const { brandName, industry, personality, audience, logoHasName } = brandData;
+  const f = fonts;
+  const [downloading, setDownloading] = useState(null);
+
+  const handleDownloadTemplate = async (type) => {
+    setDownloading(type);
+    try {
+      const url = await generateTemplatePNG({ type, palette, brandName, logoHasName, logoSrc, displayFont: f.display });
+      downloadDataUrl(url, `${brandName.replace(/\s+/g,"-")}-${type}.png`);
+    } catch(e) { console.error(e); }
+    setDownloading(null);
+  };
+
+  const handleDownloadGuide = () => {
+    const html = generateBrandGuideHTML({ brandName, industry, personality, audience, palette, fonts: f, logoSrc });
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+  };
+
+  const handleDownloadLogoVersion = (filter, suffix, bg) => {
+    const canvas = document.createElement("canvas");
+    const size = 1024;
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    // Transparent background — no fill
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const scale = Math.min((size*0.7)/img.width, (size*0.7)/img.height);
+      const w = img.width*scale, h = img.height*scale;
+      if (filter === "white") { ctx.filter = "brightness(0) invert(1)"; }
+      else if (filter === "black") { ctx.filter = "brightness(0)"; }
+      ctx.drawImage(img, (size-w)/2, (size-h)/2, w, h);
+      downloadDataUrl(canvas.toDataURL("image/png"), `${brandName.replace(/\s+/g,"-")}-logo-${suffix}.png`);
+    };
+    img.src = logoSrc;
+  };
+
+  const Btn = ({ onClick, children, loading, small }) => (
+    <button onClick={onClick} disabled={loading}
+      style={{ padding:small?"6px 14px":"10px 20px",borderRadius:8,border:"1px solid #333",background:loading?"#1a1a1a":"rgba(80,200,120,0.08)",
+        color:loading?"#555":"#50c878",fontSize:small?11:12,fontWeight:600,cursor:loading?"wait":"pointer",transition:"all 0.15s",whiteSpace:"nowrap" }}>
+      {loading ? "⏳" : children}
+    </button>
+  );
+
+  const Section = ({ title, children, locked, proPreview }) => (
+    <div style={{ marginBottom:36 }}>
+      <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:16 }}>
+        <h3 style={{ fontSize:16,fontWeight:700,color:"#fafafa",margin:0,fontFamily:"'Space Grotesk', sans-serif" }}>{title}</h3>
+        {locked&&!isPro&&<span style={{ fontSize:10,padding:"3px 10px",borderRadius:20,background:"rgba(232,168,56,0.15)",color:"#e8a838",fontWeight:600 }}>PRO</span>}
+        {locked&&isPro&&<span style={{ fontSize:10,padding:"3px 10px",borderRadius:20,background:"rgba(80,200,120,0.15)",color:"#50c878",fontWeight:600 }}>✓ PRO</span>}
+      </div>
+      {locked&&!isPro ? (
+        <div style={{ padding:24,borderRadius:12,border:"1px dashed #2a2a2a",background:"rgba(255,255,255,0.01)" }}>
+          {proPreview&&<div style={{ marginBottom:16,filter:"blur(2px)",opacity:0.4,pointerEvents:"none" }}>{proPreview}</div>}
+          <div style={{ textAlign:"center",color:"#666",fontSize:13 }}>🔒 Disponible en el plan Pro</div>
+        </div>
+      ) : children}
+    </div>
+  );
+
+  const SocialMockup = ({ type, w, h, label }) => (
+    <div style={{ textAlign:"center" }}>
+      <div style={{ width:w,height:h,borderRadius:10,background:GRID_BG,backgroundSize:"20px 20px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:16,border:"1px solid #ddd",boxSizing:"border-box" }}>
+        <img src={logoSrc} alt="" style={{ maxWidth:type==="story"?"60%":"50%",maxHeight:logoHasName?"50%":"35%",objectFit:"contain" }} />
+        {!logoHasName&&<div style={{ fontFamily:`'${f.display}',serif`,fontSize:type==="story"?12:14,fontWeight:700,color:palette.dark,lineHeight:1.3,marginTop:8 }}>{brandName}</div>}
+      </div>
+      <div style={{ fontSize:11,color:"#777",marginTop:8 }}>{label}</div>
+    </div>
+  );
+
+  const LogoVersions = () => (
+    <div style={{ display:"flex",gap:16,flexWrap:"wrap" }}>
+      {[
+        { label:"Original",bg:CHECKER,filter:null,suffix:"original",desc:"Fondo transparente" },
+        { label:"Blanco",bg:"#1a1a1a",filter:"brightness(0) invert(1)",suffix:"blanco",desc:"Para fondos oscuros" },
+        { label:"Negro",bg:"#ffffff",filter:"brightness(0)",suffix:"negro",desc:"Para fondos claros" },
+        { label:"Sin fondo",bg:CHECKER,filter:null,suffix:"sin-fondo",desc:"PNG transparente" },
+      ].map(v=>(
+        <div key={v.suffix} style={{ textAlign:"center" }}>
+          <div style={{ width:120,height:90,borderRadius:10,background:v.bg,display:"flex",alignItems:"center",justifyContent:"center",border:"1px solid #2a2a2a" }}>
+            <img src={logoSrc} alt="" style={{ maxWidth:"75%",maxHeight:"70%",objectFit:"contain",filter:v.filter||"none" }} />
+          </div>
+          <div style={{ fontSize:11,color:"#aaa",marginTop:6 }}>{v.label}</div>
+          <div style={{ fontSize:9,color:"#555" }}>{v.desc}</div>
+          {isPro&&<Btn small onClick={()=>handleDownloadLogoVersion(v.filter?"white":"black"==="white"?v.suffix==="blanco"?"white":"black":v.suffix==="negro"?"black":null,v.suffix)}>↓ PNG</Btn>}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Fixed logo download
+  const LogoVersionsPro = () => (
+    <div style={{ display:"flex",gap:16,flexWrap:"wrap" }}>
+      {[
+        { label:"Original",bg:CHECKER,filterVal:null,suffix:"original",desc:"Fondo transparente" },
+        { label:"Blanco",bg:"#1a1a1a",filterVal:"white",suffix:"blanco",desc:"Para fondos oscuros" },
+        { label:"Negro",bg:"#ffffff",filterVal:"black",suffix:"negro",desc:"Para fondos claros" },
+        { label:"Sin fondo",bg:CHECKER,filterVal:null,suffix:"sin-fondo",desc:"PNG transparente" },
+      ].map(v=>(
+        <div key={v.suffix} style={{ textAlign:"center" }}>
+          <div style={{ width:120,height:90,borderRadius:10,background:v.bg,display:"flex",alignItems:"center",justifyContent:"center",border:"1px solid #2a2a2a" }}>
+            <img src={logoSrc} alt="" style={{ maxWidth:"75%",maxHeight:"70%",objectFit:"contain",filter:v.filterVal==="white"?"brightness(0) invert(1)":v.filterVal==="black"?"brightness(0)":"none" }} />
+          </div>
+          <div style={{ fontSize:11,color:"#aaa",marginTop:6 }}>{v.label}</div>
+          <div style={{ fontSize:9,color:"#555",marginBottom:4 }}>{v.desc}</div>
+          {isPro&&<Btn small onClick={()=>handleDownloadLogoVersion(v.filterVal,v.suffix)}>↓ PNG 1024px</Btn>}
+        </div>
+      ))}
+    </div>
+  );
+
+  const templates = [
+    { type:"post",name:"Post informativo",size:"1080×1080",desc:"Título + cuerpo + CTA" },
+    { type:"story",name:"Story promocional",size:"1080×1920",desc:"Oferta o novedad" },
+    { type:"cover",name:"Portada Facebook",size:"1640×924",desc:"Header de página" },
+  ];
+
+  return (
+    <div style={{ padding:"32px 20px",maxWidth:680,margin:"0 auto" }}>
+      <div style={{ display:"flex",alignItems:"center",gap:20,marginBottom:40,padding:24,borderRadius:16,background:"#111",border:"1px solid #1a1a1a" }}>
+        <img src={logoSrc} alt="" style={{ width:56,height:56,objectFit:"contain",borderRadius:8,background:CHECKER,padding:8 }} />
+        <div style={{ flex:1 }}>
+          <h2 style={{ fontSize:22,fontWeight:700,color:"#fafafa",margin:0,fontFamily:"'Space Grotesk', sans-serif" }}>Kit de marca — {brandName}</h2>
+          <p style={{ fontSize:13,color:"#888",margin:"4px 0 0" }}>{industry} · {personality}{audience?` · ${audience}`:""}</p>
+        </div>
+        {isPro&&<span style={{ fontSize:11,padding:"4px 12px",borderRadius:20,background:"rgba(80,200,120,0.15)",color:"#50c878",fontWeight:700 }}>PRO</span>}
+      </div>
+
+      {/* Palette */}
+      <Section title="Paleta de colores">
+        <div style={{ display:"flex",flexWrap:"wrap",gap:16 }}>
+          {Object.entries(palette).map(([k,v])=>(
+            <div key={k} style={{ textAlign:"center" }}>
+              <div style={{ width:80,height:80,borderRadius:12,background:v,border:"1px solid rgba(255,255,255,0.08)",boxShadow:"0 2px 8px rgba(0,0,0,0.3)" }} />
+              <div style={{ fontSize:11,color:"#999",marginTop:6,fontFamily:"monospace" }}>{v.toUpperCase()}</div>
+              <div style={{ fontSize:10,color:"#666" }}>{k.charAt(0).toUpperCase()+k.slice(1)}</div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* Typography */}
+      <Section title="Tipografías">
+        <div style={{ display:"flex",flexDirection:"column",gap:16 }}>
+          <div style={{ padding:20,borderRadius:12,background:"#111",border:"1px solid #1a1a1a" }}>
+            <div style={{ fontSize:11,color:"#888",marginBottom:6,textTransform:"uppercase",letterSpacing:1 }}>Display / Títulos</div>
+            <div style={{ fontFamily:`'${f.display}',serif`,fontSize:32,fontWeight:700,color:"#fafafa" }}>{f.display}</div>
+            <div style={{ fontFamily:`'${f.display}',serif`,fontSize:18,color:"#bbb",marginTop:4 }}>Aa Bb Cc Dd Ee Ff Gg 1234567890</div>
+          </div>
+          <div style={{ padding:20,borderRadius:12,background:"#111",border:"1px solid #1a1a1a" }}>
+            <div style={{ fontSize:11,color:"#888",marginBottom:6,textTransform:"uppercase",letterSpacing:1 }}>Body / Texto</div>
+            <div style={{ fontFamily:`'${f.body}',sans-serif`,fontSize:24,color:"#fafafa" }}>{f.body}</div>
+            <div style={{ fontFamily:`'${f.body}',sans-serif`,fontSize:15,color:"#bbb",marginTop:4,lineHeight:1.6 }}>La tipografía correcta transmite profesionalismo y coherencia.</div>
+          </div>
+          <div style={{ display:"flex",gap:0,borderRadius:10,overflow:"hidden",border:"1px solid #2a2a2a" }}>
+            <div style={{ flex:1,padding:16,textAlign:"center",background:palette.primary }}>
+              <div style={{ fontFamily:`'${f.display}',serif`,fontSize:28,fontWeight:700,color:contrastColor(palette.primary) }}>Aa</div>
+              <div style={{ fontSize:10,color:contrastColor(palette.primary),opacity:0.7 }}>Títulos</div>
+            </div>
+            <div style={{ flex:1,padding:16,textAlign:"center",background:"#1a1a1a" }}>
+              <div style={{ fontFamily:`'${f.body}',sans-serif`,fontSize:28,color:"#eee" }}>Aa</div>
+              <div style={{ fontSize:10,color:"#999" }}>Cuerpo</div>
+            </div>
+            <div style={{ flex:1,padding:16,textAlign:"center",background:palette.light }}>
+              <div style={{ fontFamily:`'${f.mono}',monospace`,fontSize:28,color:palette.dark }}>01</div>
+              <div style={{ fontSize:10,color:palette.neutral }}>Datos</div>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      {/* Social preview */}
+      <Section title="Preview en redes">
+        <div style={{ display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-end" }}>
+          <SocialMockup type="post" w={180} h={180} label="Post Instagram" />
+          <SocialMockup type="story" w={101} h={180} label="Story" />
+          <SocialMockup type="cover" w={200} h={112} label="Portada Facebook" />
+        </div>
+      </Section>
+
+      {/* PRO: Logo versions */}
+      <Section title="Versiones del logo" locked proPreview={<LogoVersionsPro />}>
+        <LogoVersionsPro />
+        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Cada versión se descarga como PNG 1024×1024 con fondo transparente. Las versiones blanco/negro mantienen la silueta de tu logo sin agregar fondo.</p>
+      </Section>
+
+      {/* PRO: Templates */}
+      <Section title="Templates descargables" locked proPreview={
+        <div style={{ display:"flex",gap:12 }}>{templates.map(t=>(<div key={t.type} style={{ padding:14,borderRadius:10,background:"#111",border:"1px solid #1a1a1a",textAlign:"center",flex:1 }}>
+          <div style={{ fontSize:13,fontWeight:600,color:"#ccc" }}>{t.name}</div><div style={{ fontSize:10,color:"#666",marginTop:4 }}>{t.size}</div></div>))}</div>
+      }>
+        <div style={{ display:"flex",gap:12,flexWrap:"wrap" }}>
+          {templates.map(t=>(
+            <div key={t.type} style={{ padding:16,borderRadius:10,background:"#111",border:"1px solid #1a1a1a",textAlign:"center",flex:1,minWidth:150 }}>
+              <div style={{ fontSize:13,fontWeight:600,color:"#ccc" }}>{t.name}</div>
+              <div style={{ fontSize:10,color:"#666",marginTop:4,marginBottom:10 }}>{t.size} · {t.desc}</div>
+              <Btn onClick={()=>handleDownloadTemplate(t.type)} loading={downloading===t.type}>↓ Descargar PNG</Btn>
+            </div>
+          ))}
+        </div>
+        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Los PNGs se generan con tu logo, paleta y tipografía aplicados. Podés editarlos en Canva, Figma o cualquier editor.</p>
+      </Section>
+
+      {/* PRO: Mockups */}
+      <Section title="Mockups de aplicación" locked proPreview={
+        <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>{MOCKUP_TYPES.slice(0,4).map(m=>(<div key={m.name} style={{ display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,background:"#111" }}><span style={{fontSize:20}}>{m.icon}</span><div><div style={{fontSize:12,color:"#ccc",fontWeight:600}}>{m.name}</div><div style={{fontSize:10,color:"#666"}}>{m.desc}</div></div></div>))}</div>
+      }>
+        <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:10 }}>
+          {MOCKUP_TYPES.map(m=>(
+            <div key={m.name} style={{ display:"flex",alignItems:"center",gap:12,padding:"14px 16px",borderRadius:10,background:"#111",border:"1px solid #1a1a1a" }}>
+              <span style={{ fontSize:24 }}>{m.icon}</span>
+              <div style={{ flex:1 }}><div style={{ fontSize:13,color:"#eee",fontWeight:600 }}>{m.name}</div><div style={{ fontSize:11,color:"#777",marginTop:2 }}>{m.desc}</div></div>
+              <span style={{ fontSize:10,color:"#888",padding:"3px 8px",borderRadius:8,background:"#1a1a1a" }}>Próximamente</span>
+            </div>
+          ))}
+        </div>
+        <p style={{ fontSize:12,color:"#777",marginTop:12 }}>Los mockups fotorrealistas requieren procesamiento server-side. Disponibles en la versión deploy.</p>
+      </Section>
+
+      {/* PRO: Brand guide */}
+      <Section title="Guía de marca (PDF)" locked proPreview={
+        <div style={{ padding:16,borderRadius:10,background:"#111",textAlign:"center" }}>
+          <span style={{ fontSize:32 }}>📄</span>
+          <div style={{ fontSize:13,color:"#ccc",marginTop:8 }}>Guía de 3 páginas con reglas de uso</div>
+        </div>
+      }>
+        <div style={{ padding:20,borderRadius:12,background:"#111",border:"1px solid #1a1a1a" }}>
+          <div style={{ display:"flex",alignItems:"center",gap:16,marginBottom:16 }}>
+            <div style={{ width:48,height:64,borderRadius:6,background:`linear-gradient(135deg, ${palette.primary}, ${palette.secondary})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20 }}>📄</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:14,fontWeight:700,color:"#eee" }}>Guía de marca — {brandName}</div>
+              <div style={{ fontSize:12,color:"#888",marginTop:2 }}>3 páginas · Paleta · Tipografías · Logo · Aplicaciones</div>
+            </div>
+          </div>
+          <p style={{ fontSize:12,color:"#777",lineHeight:1.6,marginBottom:16 }}>Se abre en una pestaña nueva lista para imprimir o guardar como PDF (Ctrl+P → "Guardar como PDF").</p>
+          <Btn onClick={handleDownloadGuide}>Abrir guía de marca →</Btn>
+        </div>
+      </Section>
+
+      {/* CTA */}
+      {!isPro&&(
+        <div style={{ padding:28,borderRadius:16,textAlign:"center",background:"linear-gradient(135deg, rgba(232,168,56,0.1), rgba(232,168,56,0.02))",border:"1px solid rgba(232,168,56,0.2)",marginTop:8 }}>
+          <h3 style={{ fontSize:18,color:"#fafafa",margin:"0 0 8px",fontFamily:"'Space Grotesk', sans-serif" }}>Desbloqueá tu kit completo</h3>
+          <p style={{ fontSize:14,color:"#999",margin:"0 0 6px" }}>Logo en versiones · Templates descargables · Guía PDF</p>
+          <p style={{ fontSize:12,color:"#666",margin:"0 0 20px" }}>Pago único — descargá todo al instante.</p>
+          <button style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#e8a838",color:"#0a0a0a",fontSize:15,fontWeight:700,cursor:"pointer" }}>Obtener Kit Pro — USD $29</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── App ──
+export default function BrandKitApp() {
+  const [step, setStep] = useState("upload");
+  const [logoSrc, setLogoSrc] = useState(null);
+  const [colors, setColors] = useState([]);
+  const [palette, setPalette] = useState(null);
+  const [brandData, setBrandData] = useState(null);
+  const [fonts, setFonts] = useState(null);
+  const [isPro, setIsPro] = useState(false);
+
+  const handleUpload = useCallback((src) => {
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.onload = () => { const ext = extractColors(img); setPalette(generateHarmonicPalette(ext)); setLogoSrc(src); setColors(ext); setStep("questions"); };
+    img.src = src;
+  }, []);
+
+  const handleComplete = useCallback((data) => {
+    setBrandData(data); setFonts(FONT_PAIRINGS[data.personality]||FONT_PAIRINGS["Profesional"]);
+    setStep("generating"); setTimeout(()=>setStep("result"),5500);
+  }, []);
+
+  useEffect(() => {
+    if (fonts) {
+      const fams = [fonts.display,fonts.body,fonts.mono].map(f=>f.replace(/ /g,"+")).join("&family=");
+      const link = document.createElement("link");
+      link.href = `https://fonts.googleapis.com/css2?family=${fams}:wght@400;600;700&display=swap`;
+      link.rel = "stylesheet"; document.head.appendChild(link);
+    }
+  }, [fonts]);
+
+  return (
+    <div style={{ minHeight:"100vh",background:"#0a0a0a",color:"#fafafa",fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
+      <nav style={{ padding:"16px 24px",borderBottom:"1px solid #1a1a1a",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
+        <div style={{ display:"flex",alignItems:"center",gap:10 }}>
+          <div style={{ width:28,height:28,borderRadius:6,background:"linear-gradient(135deg, #e8a838, #d4872a)" }} />
+          <span style={{ fontSize:16,fontWeight:700,letterSpacing:"-0.02em",fontFamily:"'Space Grotesk', sans-serif" }}>BrandKit</span>
+          <span style={{ fontSize:11,color:"#e8a838",background:"rgba(232,168,56,0.12)",padding:"2px 8px",borderRadius:10,fontWeight:600 }}>BETA</span>
+        </div>
+        {step==="result"&&(
+          <button onClick={()=>setIsPro(!isPro)}
+            style={{ fontSize:11,padding:"5px 14px",borderRadius:8,border:"1px solid",cursor:"pointer",
+              borderColor:isPro?"#50c878":"#444",background:isPro?"rgba(80,200,120,0.1)":"transparent",color:isPro?"#50c878":"#999" }}>
+            {isPro?"✓ Modo Pro activo":"Ver modo Pro"}
+          </button>
+        )}
+      </nav>
+      {step==="upload"&&<UploadStep onUpload={handleUpload} />}
+      {step==="questions"&&<QuestionsStep logoSrc={logoSrc} colors={colors} onComplete={handleComplete} />}
+      {step==="generating"&&<GeneratingStep />}
+      {step==="result"&&<ResultStep brandData={brandData} palette={palette} fonts={fonts} logoSrc={logoSrc} colors={colors} isPro={isPro} />}
+    </div>
+  );
+}
