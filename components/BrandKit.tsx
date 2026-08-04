@@ -126,20 +126,11 @@ async function generateBrandGuidePDF({ brandName, industry, personality, audienc
   let y = margin;
   y = drawColorBar(y);
 
-// Logo
-    if (logoData) {
-      try {
-        const logoImg = await loadImageForCanvas(logoSrc);
-        if (logoImg) {
-          const maxW = 40, maxH = 20;
-          const ratio = Math.min(maxW / logoImg.width, maxH / logoImg.height);
-          const lw = logoImg.width * ratio;
-          const lh = logoImg.height * ratio;
-          doc.addImage(logoData, "PNG", margin, y, lw, lh, undefined, "FAST");
-          y += lh + 5;
-        }
-      } catch(e) { y += 5; }
-    }
+  // Logo
+  if (logoData) {
+    try { doc.addImage(logoData, "PNG", margin, y, 35, 25, undefined, "FAST"); } catch(e) {}
+  }
+  y += 30;
 
   // Title
   doc.setFontSize(32);
@@ -493,24 +484,161 @@ const MOCKUP_TYPES = [
   {name:"Fachada / Local",desc:"Tu logo en frente de local",icon:"🏪"},
 ];
 
+// ── Brand colors ──
+const BRAND = {
+  primary: "#b6cc00",    // verde lima Hey Brandido
+  dark: "#2b2b35",       // gris oscuro Hey Brandido
+  primaryDark: "#99aa00",
+  primaryText: "#1a1f00",
+};
+
+// ── Background detection helper — samples corners + edges ──
+function detectsWhiteBg(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      const size = 100;
+      c.width = size; c.height = size;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, size, size);
+      // Sample 12 points: 4 corners + 4 edge midpoints + 4 near-corners
+      const pts = [
+        [0,0],[size-1,0],[0,size-1],[size-1,size-1],
+        [size/2,0],[0,size/2],[size-1,size/2],[size/2,size-1],
+        [3,3],[size-4,3],[3,size-4],[size-4,size-4],
+      ];
+      let whitishCount = 0;
+      let opaqueCount = 0;
+      pts.forEach(([x,y]) => {
+        const d = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+        const [r,g,b,a] = d;
+        if (a > 200) {
+          opaqueCount++;
+          if (r > 210 && g > 210 && b > 210) whitishCount++;
+        }
+      });
+      // If most opaque sampled points are white/light → has bg
+      resolve(opaqueCount >= 6 && whitishCount / opaqueCount >= 0.7);
+    };
+    img.onerror = () => resolve(false);
+    img.src = src;
+  });
+}
+
+async function removeBgClient(src) {
+  try {
+    // Convert dataURL to blob
+    const res = await fetch(src);
+    const blob = await res.blob();
+
+    // Send to our API route (server-side processing, no limits)
+    const formData = new FormData();
+    formData.append("image", blob, "logo.png");
+
+    const response = await fetch("/api/remove-bg", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || `Server error ${response.status}`);
+    }
+
+    const resultBlob = await response.blob();
+    return URL.createObjectURL(resultBlob);
+  } catch(e) {
+    console.error("removeBg error:", e);
+    throw e;
+  }
+}
+
 // ── Upload ──
 function UploadStep({ onUpload }) {
   const [dragging, setDragging] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [hasBg, setHasBg] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [rawSrc, setRawSrc] = useState(null);
   const fileRef = useRef();
-  const handleFile = (f) => { if (!f||!f.type.startsWith("image/")) return; const r = new FileReader(); r.onload=(e)=>onUpload(e.target.result); r.readAsDataURL(f); };
+
+  const handleFile = async (f) => {
+    if (!f || !f.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const src = e.target.result;
+      setRawSrc(src);
+      setPreview(src);
+      const bg = await detectsWhiteBg(src);
+      setHasBg(bg);
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const handleRemoveBg = async () => {
+    setRemoving(true);
+    try {
+      const cleaned = await removeBgClient(rawSrc);
+      setPreview(cleaned);
+      setHasBg(false);
+    } catch(e) {
+      alert("No se pudo eliminar el fondo. Intentá con una imagen más clara.");
+    }
+    setRemoving(false);
+  };
+
   return (
     <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:32,padding:"48px 20px" }}>
       <div style={{ textAlign:"center",maxWidth:480 }}>
         <h1 style={{ fontSize:28,fontWeight:700,color:"#fafafa",margin:0,letterSpacing:"-0.02em",fontFamily:"'Space Grotesk', sans-serif" }}>Subí tu logo</h1>
         <p style={{ fontSize:15,color:"#8a8a8a",marginTop:12,lineHeight:1.6 }}>Analizamos los colores y el estilo de tu logo para construir todo el sistema visual de tu marca.</p>
       </div>
-      <div onDragOver={e=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)}
-        onDrop={e=>{e.preventDefault();setDragging(false);handleFile(e.dataTransfer.files[0])}} onClick={()=>fileRef.current?.click()}
-        style={{ width:"100%",maxWidth:400,height:220,border:`2px dashed ${dragging?"#e8a838":"#333"}`,borderRadius:16,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,cursor:"pointer",transition:"all 0.2s",background:dragging?"rgba(232,168,56,0.05)":"rgba(255,255,255,0.02)" }}>
-        <div style={{ fontSize:48,opacity:0.4 }}>⬆</div>
-        <div style={{ color:"#aaa",fontSize:14,textAlign:"center",padding:"0 20px" }}>Arrastrá tu logo acá o hacé click<br/><span style={{ fontSize:12,color:"#666" }}>PNG, JPG o SVG — fondo transparente recomendado</span></div>
-      </div>
-      <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleFile(e.target.files[0])} />
+
+      {!preview ? (
+        <>
+          <div onDragOver={e=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)}
+            onDrop={e=>{e.preventDefault();setDragging(false);handleFile(e.dataTransfer.files[0])}} onClick={()=>fileRef.current?.click()}
+            style={{ width:"100%",maxWidth:400,height:220,border:`2px dashed ${dragging?"#b6cc00":"#333"}`,borderRadius:16,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,cursor:"pointer",transition:"all 0.2s",background:dragging?"rgba(232,168,56,0.05)":"rgba(255,255,255,0.02)" }}>
+            <div style={{ fontSize:48,opacity:0.4 }}>⬆</div>
+            <div style={{ color:"#aaa",fontSize:14,textAlign:"center",padding:"0 20px" }}>Arrastrá tu logo acá o hacé click<br/><span style={{ fontSize:12,color:"#666" }}>PNG, JPG o SVG — fondo transparente recomendado</span></div>
+          </div>
+          <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleFile(e.target.files[0])} />
+        </>
+      ) : (
+        <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:20,width:"100%",maxWidth:400 }}>
+          <div style={{ width:200,height:200,borderRadius:16,background:CHECKER,display:"flex",alignItems:"center",justifyContent:"center",border:"1px solid #2a2a2a" }}>
+            <img src={preview} alt="Logo" style={{ maxWidth:"80%",maxHeight:"80%",objectFit:"contain" }} />
+          </div>
+
+          {hasBg && (
+            <div style={{ padding:16,borderRadius:12,background:"rgba(182,204,0,0.08)",border:"1px solid rgba(182,204,0,0.25)",textAlign:"center",width:"100%",boxSizing:"border-box" }}>
+              <p style={{ color:"#b6cc00",fontSize:13,margin:"0 0 10px",fontWeight:600 }}>
+                ⚠️ Detectamos que tu logo tiene fondo blanco
+              </p>
+              <p style={{ color:"#999",fontSize:12,margin:"0 0 12px",lineHeight:1.5 }}>
+                Para mejores resultados en el kit, te recomendamos eliminar el fondo.
+              </p>
+              <button onClick={handleRemoveBg} disabled={removing}
+                style={{ padding:"10px 24px",borderRadius:8,border:"none",background:"#b6cc00",color:"#1a1f00",fontSize:13,fontWeight:700,cursor:removing?"wait":"pointer" }}>
+                {removing ? "⏳ Eliminando fondo..." : "✨ Eliminar fondo automáticamente"}
+              </button>
+              <p style={{ color:"#666",fontSize:11,margin:"8px 0 0" }}>Puede tardar unos segundos — procesamos en tu navegador</p>
+            </div>
+          )}
+
+          <div style={{ display:"flex",gap:10,width:"100%" }}>
+            <button onClick={()=>onUpload(preview)}
+              style={{ flex:1,padding:"13px",borderRadius:10,border:"none",background:"#b6cc00",color:"#1a1f00",fontSize:14,fontWeight:700,cursor:"pointer" }}>
+              Continuar con este logo →
+            </button>
+            <button onClick={()=>{setPreview(null);setRawSrc(null);setHasBg(false);}}
+              style={{ padding:"13px 16px",borderRadius:10,border:"1px solid #333",background:"transparent",color:"#999",fontSize:13,cursor:"pointer" }}>
+              Cambiar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -522,7 +650,20 @@ function QuestionsStep({ logoSrc, colors, onComplete }) {
   const [brandName, setBrandName] = useState("");
   const [audience, setAudience] = useState("");
   const [logoHasName, setLogoHasName] = useState(false);
-  const ok = industry && personality && brandName;
+  const [hasOwnFonts, setHasOwnFonts] = useState(false);
+  const [customDisplay, setCustomDisplay] = useState("");
+  const [customBody, setCustomBody] = useState("");
+  const ok = industry && personality && brandName && (!hasOwnFonts || (customDisplay && customBody));
+
+  const inputStyle = { width:"100%",padding:"12px 16px",background:"#141414",border:"1px solid #2a2a2a",borderRadius:10,color:"#fafafa",fontSize:15,outline:"none",boxSizing:"border-box" };
+  const Checkbox = ({ checked, onClick, label }) => (
+    <label style={{ display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,color:"#888" }} onClick={onClick}>
+      <div style={{ width:18,height:18,borderRadius:4,border:"1px solid #444",background:checked?"#b6cc00":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s",flexShrink:0 }}>
+        {checked&&<span style={{ color:"#0a0a0a",fontSize:12,fontWeight:700 }}>✓</span>}
+      </div>{label}
+    </label>
+  );
+
   return (
     <div style={{ display:"flex",flexDirection:"column",gap:28,padding:"32px 20px",maxWidth:600,margin:"0 auto" }}>
       <div style={{ display:"flex",alignItems:"center",gap:20 }}>
@@ -539,38 +680,70 @@ function QuestionsStep({ logoSrc, colors, onComplete }) {
           </div>
         </div>
       </div>
+
+      {/* Brand name */}
       <div>
         <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:8 }}>Nombre de tu marca *</label>
-        <input value={brandName} onChange={e=>setBrandName(e.target.value)} placeholder="Ej: Café Morena, TechSol..."
-          style={{ width:"100%",padding:"12px 16px",background:"#141414",border:"1px solid #2a2a2a",borderRadius:10,color:"#fafafa",fontSize:15,outline:"none",boxSizing:"border-box" }} />
-        <label style={{ display:"flex",alignItems:"center",gap:8,marginTop:10,cursor:"pointer",fontSize:13,color:"#888" }} onClick={()=>setLogoHasName(!logoHasName)}>
-          <div style={{ width:18,height:18,borderRadius:4,border:"1px solid #444",background:logoHasName?"#e8a838":"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s",flexShrink:0 }}>
-            {logoHasName&&<span style={{ color:"#0a0a0a",fontSize:12,fontWeight:700 }}>✓</span>}
-          </div>Mi logo ya incluye el nombre
-        </label>
+        <input value={brandName} onChange={e=>setBrandName(e.target.value)} placeholder="Ej: Café Morena, TechSol..." style={inputStyle} />
+        <div style={{ marginTop:10 }}>
+          <Checkbox checked={logoHasName} onClick={()=>setLogoHasName(!logoHasName)} label="Mi logo ya incluye el nombre" />
+        </div>
       </div>
+
+      {/* Industry */}
       <div>
         <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:10 }}>Rubro *</label>
         <div style={{ display:"flex",flexWrap:"wrap",gap:8 }}>
-          {INDUSTRIES.map(ind=>(<button key={ind} onClick={()=>setIndustry(ind)} style={{ padding:"8px 16px",borderRadius:20,border:"1px solid",borderColor:industry===ind?"#e8a838":"#2a2a2a",background:industry===ind?"rgba(232,168,56,0.12)":"transparent",color:industry===ind?"#e8a838":"#999",fontSize:13,cursor:"pointer" }}>{ind}</button>))}
+          {INDUSTRIES.map(ind=>(<button key={ind} onClick={()=>setIndustry(ind)} style={{ padding:"8px 16px",borderRadius:20,border:"1px solid",borderColor:industry===ind?"#b6cc00":"#2a2a2a",background:industry===ind?"rgba(182,204,0,0.12)":"transparent",color:industry===ind?"#b6cc00":"#999",fontSize:13,cursor:"pointer" }}>{ind}</button>))}
         </div>
       </div>
+
+      {/* Personality */}
       <div>
         <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:10 }}>Personalidad de marca *</label>
         <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
-          {PERSONALITIES.map(p=>(<button key={p.label} onClick={()=>setPersonality(p.label)} style={{ padding:"12px 16px",borderRadius:10,border:"1px solid",borderColor:personality===p.label?"#e8a838":"#2a2a2a",background:personality===p.label?"rgba(232,168,56,0.12)":"#0f0f0f",textAlign:"left",cursor:"pointer" }}>
-            <div style={{ color:personality===p.label?"#e8a838":"#ddd",fontSize:14,fontWeight:600 }}>{p.label}</div>
+          {PERSONALITIES.map(p=>(<button key={p.label} onClick={()=>setPersonality(p.label)} style={{ padding:"12px 16px",borderRadius:10,border:"1px solid",borderColor:personality===p.label?"#b6cc00":"#2a2a2a",background:personality===p.label?"rgba(182,204,0,0.12)":"#0f0f0f",textAlign:"left",cursor:"pointer" }}>
+            <div style={{ color:personality===p.label?"#b6cc00":"#ddd",fontSize:14,fontWeight:600 }}>{p.label}</div>
             <div style={{ color:"#777",fontSize:12,marginTop:2 }}>{p.desc}</div>
           </button>))}
         </div>
       </div>
+
+      {/* Audience */}
       <div>
         <label style={{ color:"#ccc",fontSize:13,fontWeight:600,display:"block",marginBottom:8 }}>¿A quién le vendés? (opcional)</label>
-        <input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Ej: Mujeres de 25-45, empresas B2B..."
-          style={{ width:"100%",padding:"12px 16px",background:"#141414",border:"1px solid #2a2a2a",borderRadius:10,color:"#fafafa",fontSize:15,outline:"none",boxSizing:"border-box" }} />
+        <input value={audience} onChange={e=>setAudience(e.target.value)} placeholder="Ej: Mujeres de 25-45, empresas B2B..." style={inputStyle} />
       </div>
-      <button onClick={()=>onComplete({industry,personality,brandName,audience,logoHasName})} disabled={!ok}
-        style={{ padding:"14px 32px",borderRadius:12,border:"none",background:ok?"#e8a838":"#2a2a2a",color:ok?"#0a0a0a":"#555",fontSize:15,fontWeight:700,cursor:ok?"pointer":"default",alignSelf:"flex-start" }}>
+
+      {/* Custom fonts */}
+      <div>
+        <div style={{ marginBottom:12 }}>
+          <Checkbox checked={hasOwnFonts} onClick={()=>setHasOwnFonts(!hasOwnFonts)} label="Ya tengo mis tipografías — quiero usarlas en el kit" />
+        </div>
+        {hasOwnFonts && (
+          <div style={{ padding:16,borderRadius:12,background:"#0f0f0f",border:"1px solid #2a2a2a",display:"flex",flexDirection:"column",gap:12 }}>
+            <p style={{ color:"#888",fontSize:12,margin:0,lineHeight:1.5 }}>
+              Ingresá los nombres exactos como aparecen en Google Fonts (ej: "Playfair Display", "Inter").
+            </p>
+            <div>
+              <label style={{ color:"#bbb",fontSize:12,display:"block",marginBottom:6 }}>Tipografía de títulos (Display) *</label>
+              <input value={customDisplay} onChange={e=>setCustomDisplay(e.target.value)}
+                placeholder="Ej: Playfair Display, Montserrat, Raleway..." style={inputStyle} />
+            </div>
+            <div>
+              <label style={{ color:"#bbb",fontSize:12,display:"block",marginBottom:6 }}>Tipografía de texto (Body) *</label>
+              <input value={customBody} onChange={e=>setCustomBody(e.target.value)}
+                placeholder="Ej: Inter, Open Sans, Lato..." style={inputStyle} />
+            </div>
+            <p style={{ color:"#666",fontSize:11,margin:0 }}>
+              Verificá que estén disponibles en <a href="https://fonts.google.com" target="_blank" rel="noopener" style={{ color:"#b6cc00" }}>fonts.google.com</a> para que se carguen correctamente.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <button onClick={()=>onComplete({ industry, personality, brandName, audience, logoHasName, customFonts: hasOwnFonts ? { display: customDisplay, body: customBody, mono: "JetBrains Mono" } : null })} disabled={!ok}
+        style={{ padding:"14px 32px",borderRadius:12,border:"none",background:ok?"#b6cc00":"#2a2a2a",color:ok?"#1a1f00":"#555",fontSize:15,fontWeight:700,cursor:ok?"pointer":"default",alignSelf:"flex-start" }}>
         Generar mi kit de marca →
       </button>
     </div>
@@ -584,7 +757,7 @@ function GeneratingStep() {
   useEffect(() => { const t = setInterval(()=>setS(v=>Math.min(v+1,msgs.length-1)),1100); return()=>clearInterval(t); }, []);
   return (
     <div style={{ display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:24,padding:60,minHeight:300 }}>
-      <div style={{ width:48,height:48,border:"3px solid #2a2a2a",borderTopColor:"#e8a838",borderRadius:"50%",animation:"spin 0.8s linear infinite" }} />
+      <div style={{ width:48,height:48,border:"3px solid #2a2a2a",borderTopColor:"#b6cc00",borderRadius:"50%",animation:"spin 0.8s linear infinite" }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       <p style={{ color:"#ccc",fontSize:16 }}>{msgs[s]}</p>
     </div>
@@ -643,7 +816,7 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
     <div style={{ marginBottom:36 }}>
       <div style={{ display:"flex",alignItems:"center",gap:10,marginBottom:16 }}>
         <h3 style={{ fontSize:16,fontWeight:700,color:"#fafafa",margin:0,fontFamily:"'Space Grotesk', sans-serif" }}>{title}</h3>
-        {locked&&!isPro&&<span style={{ fontSize:10,padding:"3px 10px",borderRadius:20,background:"rgba(232,168,56,0.15)",color:"#e8a838",fontWeight:600 }}>PRO</span>}
+        {locked&&!isPro&&<span style={{ fontSize:10,padding:"3px 10px",borderRadius:20,background:"rgba(232,168,56,0.15)",color:"#b6cc00",fontWeight:600 }}>PRO</span>}
         {locked&&isPro&&<span style={{ fontSize:10,padding:"3px 10px",borderRadius:20,background:"rgba(80,200,120,0.15)",color:"#50c878",fontWeight:600 }}>✓ PRO</span>}
       </div>
       {locked&&!isPro ? (
@@ -815,11 +988,11 @@ function ResultStep({ brandData, palette, fonts, logoSrc, colors, isPro }) {
 
       {/* CTA */}
       {!isPro&&(
-        <div style={{ padding:28,borderRadius:16,textAlign:"center",background:"linear-gradient(135deg, rgba(232,168,56,0.1), rgba(232,168,56,0.02))",border:"1px solid rgba(232,168,56,0.2)",marginTop:8 }}>
+        <div style={{ padding:28,borderRadius:16,textAlign:"center",background:"linear-gradient(135deg, rgba(182,204,0,0.1), rgba(182,204,0,0.02))",border:"1px solid rgba(182,204,0,0.2)",marginTop:8 }}>
           <h3 style={{ fontSize:18,color:"#fafafa",margin:"0 0 8px",fontFamily:"'Space Grotesk', sans-serif" }}>Desbloqueá tu kit completo</h3>
           <p style={{ fontSize:14,color:"#999",margin:"0 0 6px" }}>Logo en versiones · Templates descargables · Guía PDF</p>
           <p style={{ fontSize:12,color:"#666",margin:"0 0 20px" }}>Pago único · Sin suscripción · Descargá todo al instante.</p>
-          <a href="https://buy.stripe.com/test_9B66oG7jycec69f0Fs5wI00" target="_blank" rel="noopener" style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#e8a838",color:"#0a0a0a",fontSize:15,fontWeight:700,cursor:"pointer",textDecoration:"none",display:"inline-block" }}>Obtener Kit Pro — USD $9.99</a>
+          <button style={{ padding:"14px 40px",borderRadius:12,border:"none",background:"#b6cc00",color:"#1a1f00",fontSize:15,fontWeight:700,cursor:"pointer" }}>Obtener Kit Pro — USD $9.99</button>
         </div>
       )}
     </div>
@@ -843,7 +1016,8 @@ export default function BrandKitApp() {
   }, []);
 
   const handleComplete = useCallback((data) => {
-    setBrandData(data); setFonts(FONT_PAIRINGS[data.personality]||FONT_PAIRINGS["Profesional"]);
+    setBrandData(data);
+    setFonts(data.customFonts || FONT_PAIRINGS[data.personality] || FONT_PAIRINGS["Profesional"]);
     setStep("generating"); setTimeout(()=>setStep("result"),5500);
   }, []);
 
@@ -857,17 +1031,17 @@ export default function BrandKitApp() {
   }, [fonts]);
 
   return (
-    <div style={{ minHeight:"100vh",background:"#0a0a0a",color:"#fafafa",fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
+    <div style={{ minHeight:"100vh",background:"#1a1a22",color:"#fafafa",fontFamily:"'Inter','Helvetica Neue',sans-serif" }}>
       <nav style={{ padding:"16px 24px",borderBottom:"1px solid #1a1a1a",display:"flex",alignItems:"center",justifyContent:"space-between" }}>
         <div style={{ display:"flex",alignItems:"center",gap:10 }}>
-          <div style={{ width:28,height:28,borderRadius:6,background:"linear-gradient(135deg, #e8a838, #d4872a)" }} />
+          <div style={{ width:28,height:28,borderRadius:6,background:"linear-gradient(135deg, #b6cc00, #2b2b35)" }} />
           <span style={{ fontSize:16,fontWeight:700,letterSpacing:"-0.02em",fontFamily:"'Space Grotesk', sans-serif" }}>BrandKit</span>
-          <span style={{ fontSize:11,color:"#e8a838",background:"rgba(232,168,56,0.12)",padding:"2px 8px",borderRadius:10,fontWeight:600 }}>BETA</span>
+          <span style={{ fontSize:11,color:"#b6cc00",background:"rgba(232,168,56,0.12)",padding:"2px 8px",borderRadius:10,fontWeight:600 }}>BETA</span>
         </div>
         {step==="result"&&(
           <button onClick={()=>setIsPro(!isPro)}
             style={{ fontSize:11,padding:"5px 14px",borderRadius:8,border:"1px solid",cursor:"pointer",
-              borderColor:isPro?"#50c878":"#444",background:isPro?"rgba(80,200,120,0.1)":"transparent",color:isPro?"#50c878":"#999" }}>
+              borderColor:isPro?"#50c878":"#555",background:isPro?"rgba(80,200,120,0.1)":"transparent",color:isPro?"#50c878":"#999" }}>
             {isPro?"✓ Modo Pro activo":"Ver modo Pro"}
           </button>
         )}
